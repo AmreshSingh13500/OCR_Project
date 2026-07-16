@@ -41,7 +41,7 @@
 |---|---|---|---|---|
 | T1.3.1 | `downloader.py` — async httpx GET, streaming into BytesIO, size cap mid-stream | PENDING | — | — |
 | T1.3.2 | Magic-byte content detection (pdf / image / unsupported) — never trust extension | PENDING | — | — |
-| T1.3.3 | Typed exceptions: DownloadError, FileTooLargeError, UnsupportedFileError | PENDING | — | — |
+| T1.3.3 | Typed exceptions: DownloadError, FileTooLargeError, UnsupportedFileError | DONE | 2026-07-16 | `app/pipeline/downloader.py`. Done out of numeric order (before T1.3.1/T1.3.2) since both need to raise these; kept as 3 flat Exception subclasses, no shared hierarchy, to avoid except-order ambiguity in T4.3.3's mapping. |
 
 ## T2.1 — Smart PDF detection, Step 2b (Phase 2)
 
