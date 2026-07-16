@@ -1,0 +1,46 @@
+# [MODULE]   requirements.txt
+# [TASK]     T1.1 — Project scaffold
+# [SUBTASKS] T1.1.1 pinned dependency list per IMPLEMENTATION_PLAN.md §4 (T1.1.1)
+# [SUMMARY]  Pinned runtime + test dependencies for the OCR microservice. Versions
+#            are pinned exactly (no ranges) so the pipeline behaves identically across
+#            dev/staging/prod. CPU-only builds for torch/paddlepaddle per plan §1.
+# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.1.1
+# [HISTORY]  2026-07-16  T1.1.1  initial pinned dependency list
+
+# --- Web framework / server ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+gunicorn==23.0.0
+
+# --- Config & validation ---
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- HTTP client (Step 2a download, Step 6 webhook) ---
+httpx==0.28.1
+
+# --- PDF handling (Step 2b) ---
+PyMuPDF==1.25.1
+pdf2image==1.17.0
+
+# --- Image processing (Step 3) ---
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pillow==11.0.0
+
+# --- Classification (Step 4a) ---
+transformers==4.47.1
+torch==2.5.1
+
+# --- OCR engine (Step 4b), CPU-only ---
+paddleocr==2.9.1
+paddlepaddle==2.6.2
+
+# --- LLM extraction (Step 5) ---
+openai==1.58.1
+tenacity==9.0.0
+
+# --- Testing ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+respx==0.22.0
