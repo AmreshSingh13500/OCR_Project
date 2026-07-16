@@ -57,7 +57,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T2.2.1 | Grayscale conversion (BGR→GRAY) | PENDING | — | — |
+| T2.2.1 | Grayscale conversion (BGR→GRAY) | DONE | 2026-07-17 | `app/pipeline/image_cleaner.py` — `to_grayscale()`. Verified shape (H,W), dtype uint8. |
 | T2.2.2 | Deskew via minAreaRect + confidence gate (skip if \|angle\| < 0.5°) | PENDING | — | — |
 | T2.2.3 | CLAHE (clipLimit=2.0, 8×8) on grayscale before thresholding | PENDING | — | — |
 | T2.2.4 | Adaptive threshold; return both `ocr_ready` (binary) and `vision_ready` (CLAHE) | PENDING | — | — |
