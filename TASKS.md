@@ -2,7 +2,7 @@
 
 **Source of truth:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — this file only tracks *execution status*. Never copy requirement details here; always read the plan for Goal/AC.
 **Subtask tracker:** [SUBTASKS.md](SUBTASKS.md)
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 ---
 
@@ -27,10 +27,10 @@
 
 | Metric | Value |
 |---|---|
-| Tasks done | 3 / 17 |
-| Subtasks done | 16 / 68 |
-| Current phase | 2 |
-| Active tasks | T2.2 (4/5 subtasks done) |
+| Tasks done | 4 / 17 |
+| Subtasks done | 17 / 68 |
+| Current phase | 3 |
+| Active tasks | — |
 | Blocked tasks | — |
 
 ---
@@ -43,7 +43,7 @@
 | T1.2 | Auth & API endpoints | 1 | T1.1 | 0/5 | PENDING | no | — | — |
 | T1.3 | File downloader (Step 2a) | 1 | T1.1 | 3/3 | DONE | yes | 2026-07-16 | 2026-07-16 |
 | T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 5/5 | DONE | yes | 2026-07-16 | 2026-07-17 |
-| T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 4/5 | IN_PROGRESS | no | 2026-07-17 | — |
+| T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T3.1 | CLIP router (Step 4a) | 3 | T2.2 | 0/5 | PENDING | no | — | — |
 | T3.2 | PaddleOCR engine (Step 4b) | 3 | T3.1 | 0/4 | PENDING | no | — | — |
 | T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 0/6 | PENDING | no | — | — |

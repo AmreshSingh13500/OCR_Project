@@ -5,30 +5,43 @@
            T2.2.2 deskew via minAreaRect (Hough-line fallback) + confidence gate
            T2.2.3 CLAHE on grayscale before thresholding (glare/lighting fix)
            T2.2.4 adaptive threshold; clean_image() pipeline returns CleanedImage
+           T2.2.5 DEBUG_SAVE_IMAGES dumps each stage to scratch dir with case_id prefix
 [SUMMARY]  Deterministic image-cleaning pipeline for Step 3: `clean_image()` runs
            grayscale → deskew → CLAHE → adaptive threshold, returning a `CleanedImage`
            with both an OCR-ready binary image and the pre-threshold CLAHE grayscale
            "vision_ready" image for the LLM vision path (binarization destroys detail the
            vision model needs). Runs on in-memory numpy arrays only, never touches disk
-           except under DEBUG_SAVE_IMAGES (T2.2.5). `deskew()` estimates the skew angle
-           from thresholded foreground pixels via minAreaRect, falling back to Hough line
+           unless `DEBUG_SAVE_IMAGES=true`, in which case each stage is written to the
+           gitignored `debug_images/` scratch dir prefixed with the caller's `case_id`
+           (T2.2.5) — a no-op otherwise. `deskew()` estimates the skew angle from
+           thresholded foreground pixels via minAreaRect, falling back to Hough line
            detection when there isn't enough foreground to trust that estimate; it skips
            rotation entirely below a small-angle/low-confidence gate so it never makes an
            already-straight image worse. `apply_clahe()` runs on the deskewed grayscale
            before any thresholding — fixes glare/uneven lighting on photographed pages
            and medicine blister packs.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.2.1, T2.2.2, T2.2.3, T2.2.4
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.2.1, T2.2.2, T2.2.3, T2.2.4, T2.2.5
 [HISTORY]  2026-07-17  T2.2.1  initial grayscale conversion
            2026-07-17  T2.2.2  deskew with minAreaRect/Hough estimation + confidence gate
            2026-07-17  T2.2.3  CLAHE contrast enhancement
            2026-07-17  T2.2.4  adaptive threshold + clean_image() pipeline + CleanedImage
+           2026-07-17  T2.2.5  DEBUG_SAVE_IMAGES per-stage dump; clean_image() gained
+                                optional case_id param — internal signature, no external
+                                contract, additive default so existing callers are unaffected
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
+
+from app.config import settings
+
+# [T2.2.5] Gitignored scratch dir (see .gitignore) — never committed, never the only copy
+# of anything; purely a debugging aid enabled by DEBUG_SAVE_IMAGES.
+_DEBUG_IMAGE_DIR = Path("debug_images")
 
 # [T2.2.2] Below this angle, rotating does more harm (interpolation blur) than good.
 _DESKEW_MIN_ANGLE_DEG = 0.5
@@ -117,14 +130,33 @@ class CleanedImage:
     vision_ready: np.ndarray
 
 
+# [T2.2.5] Writes one pipeline stage to the debug scratch dir. No-op unless
+# DEBUG_SAVE_IMAGES is set, so the pipeline stays in-memory-only by default (CLAUDE.md).
+def _debug_save_stage(case_id: Optional[str], stage: str, image: np.ndarray) -> None:
+    if not settings.DEBUG_SAVE_IMAGES:
+        return
+    _DEBUG_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    prefix = case_id or "unknown"
+    cv2.imwrite(str(_DEBUG_IMAGE_DIR / f"{prefix}_{stage}.png"), image)
+
+
 # [T2.2.4] Full Step-3 pipeline: grayscale → deskew → CLAHE → adaptive threshold.
 # ocr_ready is the binarized output (PaddleOCR, Branch A); vision_ready is the
 # pre-threshold CLAHE grayscale (LLM vision path, Branch B) — binarizing would destroy
 # detail the vision model needs, so that image is deliberately never thresholded.
-def clean_image(image: np.ndarray) -> CleanedImage:
+# [T2.2.5] case_id is optional (defaults to None → "unknown" prefix) since the pipeline
+# orchestrator that owns per-request case IDs (T4.3) doesn't exist yet; it's only ever
+# used to name debug dumps, never to change cleaning behavior.
+def clean_image(image: np.ndarray, case_id: Optional[str] = None) -> CleanedImage:
     gray = to_grayscale(image)
+    _debug_save_stage(case_id, "1_grayscale", gray)
+
     deskewed = deskew(gray)
+    _debug_save_stage(case_id, "2_deskewed", deskewed)
+
     vision_ready = apply_clahe(deskewed)
+    _debug_save_stage(case_id, "3_clahe_vision_ready", vision_ready)
+
     ocr_ready = cv2.adaptiveThreshold(
         vision_ready,
         255,
@@ -133,4 +165,6 @@ def clean_image(image: np.ndarray) -> CleanedImage:
         _ADAPTIVE_THRESH_BLOCK_SIZE,
         _ADAPTIVE_THRESH_C,
     )
+    _debug_save_stage(case_id, "4_threshold_ocr_ready", ocr_ready)
+
     return CleanedImage(ocr_ready=ocr_ready, vision_ready=vision_ready)
