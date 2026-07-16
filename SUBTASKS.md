@@ -23,7 +23,7 @@
 | T1.1.1 | Create repo layout per plan §2 + `requirements.txt` with pinned deps | DONE | 2026-07-16 | `app/__init__.py`, `app/main.py`, `app/api/__init__.py`, `app/pipeline/__init__.py`, `app/utils/__init__.py`, `requirements.txt`, `README.md`. `main.py` has no dedicated subtask owner elsewhere so its skeleton (FastAPI app + empty lifespan) lives here; T1.2.3/T1.2.4 mount routers, T3.1.1/T3.2.1 populate lifespan model loading later per Rule 3. |
 | T1.1.2 | `config.py` via pydantic-settings; fail fast on missing env vars | DONE | 2026-07-16 | `app/config.py`. Required: OCR_API_KEY, LARAVEL_WEBHOOK_URL, LARAVEL_WEBHOOK_KEY, OPENAI_API_KEY (no default — verified ValidationError on missing). Others default to plan's example values. CLIP_LABELS deliberately deferred to T3.1.2. |
 | T1.1.3 | `utils/logging.py` — JSON logs with case_id/message_id correlation | DONE | 2026-07-16 | `app/utils/logging.py` (JSON formatter + contextvar-based `bind_case_context`); wired into `app/main.py` lifespan via `configure_logging()`. Verified: JSON output, and no cross-task bleed under concurrent asyncio tasks. |
-| T1.1.4 | `.env.example` with every var from plan §3 | PENDING | — | — |
+| T1.1.4 | `.env.example` with every var from plan §3 | DONE | 2026-07-16 | `.env.example`. Verified all 9 var names match `Settings` fields in `app/config.py` exactly (Rule 7 contract check). |
 
 ## T1.2 — Auth & API endpoints (Phase 1)
 
