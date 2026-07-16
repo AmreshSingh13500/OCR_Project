@@ -16,6 +16,7 @@ AI-powered document ingestion & OCR microservice (Python/FastAPI) for Global Car
 - Tests reference the subtask/AC they verify in their docstrings.
 - A subtask is `DONE` only when: header lists it, code is tagged, tests (if AC requires) pass, and SUBTASKS.md row is updated. A task is `DONE` only when all its subtasks are `DONE` **and** the plan's AC is verified.
 - Update both trackers in the same session as the code change — never leave them stale.
+- **Backward compatibility (Rule 7):** the external contract is frozen — request schema, `WebhookPayload` keys, the 7 exact `error_message` strings, `processing_path` values, env var names. Updates to these are **additive only** (add optional fields, never rename/remove/retype). Internal code may be refactored freely as long as the full pytest suite is green. Breaking a contract surface requires endpoint versioning + Laravel sign-off recorded in TASKS.md §5.
 
 ## Key project constraints (from the plan)
 

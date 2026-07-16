@@ -99,6 +99,27 @@ Any subtask ID must be findable in **three places** with one search — e.g. sea
 
 If a `DONE` subtask's ID doesn't appear in any source file, the tracker is lying — fix it before continuing.
 
+## Rule 7 — Backward compatibility on every update
+
+The codebase has two zones with opposite rules:
+
+**A. External contract — FROZEN, additive changes only.** These are the things Laravel (or ops) depends on; an update must never break them:
+
+| Contract surface | Rule |
+|---|---|
+| `POST /api/v1/process` request schema (PRD §4.1) | Never remove/rename a field; never make an optional field required. New **optional** fields allowed. |
+| `WebhookPayload` (PRD §4.2) | Never remove/rename keys or change a value's type/meaning. New keys are additive only (precedent: `cost`, plan §8 #1). |
+| The 7 `error_message` strings (plan T4.3.3) | Exact strings frozen forever. New error strings may be added; existing ones never edited. |
+| `processing_path` values | `native_pdf` / `paddleocr` / `vision_api` never change meaning. New values need Laravel sign-off first. |
+| Env var names (plan §3) | Renaming requires keeping the old name working as an alias for at least one release. |
+| `GET /health` response keys | Additive only. |
+
+If a breaking change is truly unavoidable: version the endpoint (`/api/v2/...`), keep v1 serving until Laravel migrates, and record the decision + sign-off in TASKS.md §5. A breaking change without consumer sign-off is never allowed.
+
+**B. Internal code — refactor freely, tests are the guard.** Anything inside `app/` that Laravel can't see (function names, module structure, helper signatures) may change at any time, provided the **full pytest suite is green after the change**. Do not keep deprecated internal code paths or `_old` functions "just in case" — delete them; git and `[HISTORY]` remember.
+
+**Compatibility gate (extends Rule 5):** if a change touches `schemas.py`, `routes.py`, `webhook_client.py`, or any error string — before marking the subtask `DONE`, explicitly verify the change is additive-only against the table above, and state that in the `[HISTORY]` line (e.g., `2026-08-01 T4.1.1 added optional 'cost' key — additive, contract-safe`).
+
 ---
 
 ## Quick example — full life of one subtask
