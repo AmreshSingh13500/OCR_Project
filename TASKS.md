@@ -28,9 +28,9 @@
 | Metric | Value |
 |---|---|
 | Tasks done | 0 / 17 |
-| Subtasks done | 1 / 68 |
+| Subtasks done | 2 / 68 |
 | Current phase | 1 |
-| Active tasks | T1.1 (1/4 subtasks done) |
+| Active tasks | T1.1 (2/4 subtasks done) |
 | Blocked tasks | — |
 
 ---
@@ -39,7 +39,7 @@
 
 | Task ID | Title | Phase | Depends On | Subtasks Done/Total | Status | AC ✔ | Started | Finished |
 |---|---|---|---|---|---|---|---|---|
-| T1.1 | Project scaffold | 1 | — | 1/4 | IN_PROGRESS | no | 2026-07-16 | — |
+| T1.1 | Project scaffold | 1 | — | 2/4 | IN_PROGRESS | no | 2026-07-16 | — |
 | T1.2 | Auth & API endpoints | 1 | T1.1 | 0/5 | PENDING | no | — | — |
 | T1.3 | File downloader (Step 2a) | 1 | T1.1 | 0/3 | PENDING | no | — | — |
 | T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 0/5 | PENDING | no | — | — |
