@@ -2,19 +2,28 @@
 [MODULE]   app/pipeline/pdf_handler.py
 [TASK]     T2.1 — Smart PDF detection (Step 2b)
 [SUBTASKS] T2.1.1 PyMuPDF open; password detection → PasswordProtectedError (exact PRD string)
+           T2.1.2 native text extraction from first MAX_PDF_PAGES_OCR pages, >100 chars gate
 [SUMMARY]  Opens the downloaded PDF bytes with PyMuPDF and detects password protection
            before any other Step-2b logic runs. Per plan T2.1.1, both a `fitz.FileDataError`
            raised while opening and a truthy `doc.needs_pass` after opening are treated as
            password protection — PyMuPDF raises FileDataError for some encrypted PDFs it
-           can't parse without a password, while others open but flag `needs_pass`. Native-
-           vs-scanned text extraction (T2.1.2), scanned-branch image conversion (T2.1.3),
-           and zero-page/corrupt handling (T2.1.5) land in this file too, under their own
-           subtask tags.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.1
+           can't parse without a password, while others open but flag `needs_pass`.
+           `extract_native_text()` reads the first MAX_PDF_PAGES_OCR pages' text layer;
+           native PDFs clear NATIVE_PDF_MIN_CHARS easily and return a NativePdfResult,
+           scanned/image-only PDFs don't and get None — the caller (T2.1.3, not yet
+           implemented) falls through to pdf2image conversion in that case. Zero-page/
+           corrupt handling (T2.1.5) lands in this file too, under its own subtask tag.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.1, T2.1.2
 [HISTORY]  2026-07-16  T2.1.1  initial PyMuPDF open + password detection
+           2026-07-16  T2.1.2  native text extraction + NativePdfResult
 """
 
+from dataclasses import dataclass
+from typing import Optional
+
 import fitz
+
+from app.config import MAX_PDF_PAGES_OCR, NATIVE_PDF_MIN_CHARS
 
 
 # [T2.1.1] Exact PRD string — frozen per CODING_RULES.md Rule 7 (error_message contract).
@@ -35,3 +44,19 @@ def open_pdf(data: bytes) -> fitz.Document:
         raise PasswordProtectedError("Password protected document")
 
     return doc
+
+
+@dataclass
+class NativePdfResult:
+    text: str
+
+
+# [T2.1.2] Extract text from up to the first MAX_PDF_PAGES_OCR pages. A real text layer
+# (native PDF) clears NATIVE_PDF_MIN_CHARS easily; a scanned/image-only PDF doesn't —
+# that gap is the signal used to route between the native-text and scanned branches.
+def extract_native_text(doc: fitz.Document) -> Optional[NativePdfResult]:
+    page_limit = min(doc.page_count, MAX_PDF_PAGES_OCR)
+    text = "".join(doc[i].get_text() for i in range(page_limit)).strip()
+    if len(text) > NATIVE_PDF_MIN_CHARS:
+        return NativePdfResult(text=text)
+    return None
