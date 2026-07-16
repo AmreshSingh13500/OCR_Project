@@ -4,22 +4,26 @@
 [SUBTASKS] T2.1.1 PyMuPDF open; password detection → PasswordProtectedError (exact PRD string)
            T2.1.2 native text extraction from first MAX_PDF_PAGES_OCR pages, >100 chars gate
            T2.1.3 scanned branch: pdf2image conversion, keep first MAX_PDF_PAGES_OCR images
+           T2.1.5 zero-page PDFs → CorruptFileError
 [SUMMARY]  Opens the downloaded PDF bytes with PyMuPDF and detects password protection
            before any other Step-2b logic runs. Per plan T2.1.1, both a `fitz.FileDataError`
            raised while opening and a truthy `doc.needs_pass` after opening are treated as
            password protection — PyMuPDF raises FileDataError for some encrypted PDFs it
-           can't parse without a password, while others open but flag `needs_pass`.
+           can't parse without a password, while others open but flag `needs_pass`. A PDF
+           that opens successfully but has zero pages is a degenerate/corrupt document —
+           `open_pdf()` raises `CorruptFileError` for that case (T2.1.5) so it never falls
+           through to text/image extraction with nothing to read.
            `extract_native_text()` reads the first MAX_PDF_PAGES_OCR pages' text layer;
            native PDFs clear NATIVE_PDF_MIN_CHARS easily and return a NativePdfResult,
            scanned/image-only PDFs don't and get None — the caller then calls
            `convert_scanned_pdf()`, which rasterizes up to MAX_PDF_PAGES_CONVERT pages
            (PRD hard cap) via pdf2image and keeps only the first MAX_PDF_PAGES_OCR images
            for the rest of the pipeline. Requires poppler-utils on the host (T2.1.4).
-           Zero-page/corrupt handling (T2.1.5) lands in this file too, under its own tag.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.1, T2.1.2, T2.1.3
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.1, T2.1.2, T2.1.3, T2.1.5
 [HISTORY]  2026-07-16  T2.1.1  initial PyMuPDF open + password detection
            2026-07-16  T2.1.2  native text extraction + NativePdfResult
            2026-07-16  T2.1.3  scanned-branch pdf2image conversion + ScannedPdfResult
+           2026-07-17  T2.1.5  zero-page detection → CorruptFileError
 """
 
 from dataclasses import dataclass
@@ -42,9 +46,16 @@ class PasswordProtectedError(Exception):
     pass
 
 
+# [T2.1.5] Raised when the PDF opens but has zero pages — a degenerate/corrupt document.
+class CorruptFileError(Exception):
+    pass
+
+
 # [T2.1.1] Opens PDF bytes with PyMuPDF; a FileDataError at open time and a truthy
 # needs_pass flag after a successful open are both observed PyMuPDF behaviors for
 # encrypted PDFs (which one occurs depends on the PDF's encryption scheme).
+# [T2.1.5] A successfully opened PDF with zero pages has nothing to extract or convert —
+# reject it here rather than letting it silently fall through to Step 3/4 with no content.
 def open_pdf(data: bytes) -> fitz.Document:
     try:
         doc = fitz.open(stream=data, filetype="pdf")
@@ -53,6 +64,9 @@ def open_pdf(data: bytes) -> fitz.Document:
 
     if doc.needs_pass:
         raise PasswordProtectedError("Password protected document")
+
+    if doc.page_count == 0:
+        raise CorruptFileError("Corrupt or unreadable file")
 
     return doc
 

@@ -28,9 +28,9 @@
 | Metric | Value |
 |---|---|
 | Tasks done | 2 / 17 |
-| Subtasks done | 10 / 68 |
+| Subtasks done | 11 / 68 |
 | Current phase | 2 |
-| Active tasks | T2.1 (3/5 subtasks done) |
+| Active tasks | T2.1 (4/5 subtasks done) |
 | Blocked tasks | — |
 
 ---
@@ -42,7 +42,7 @@
 | T1.1 | Project scaffold | 1 | — | 4/4 | DONE | yes | 2026-07-16 | 2026-07-16 |
 | T1.2 | Auth & API endpoints | 1 | T1.1 | 0/5 | PENDING | no | — | — |
 | T1.3 | File downloader (Step 2a) | 1 | T1.1 | 3/3 | DONE | yes | 2026-07-16 | 2026-07-16 |
-| T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 3/5 | IN_PROGRESS | no | 2026-07-16 | — |
+| T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 4/5 | IN_PROGRESS | no | 2026-07-16 | — |
 | T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 0/5 | PENDING | no | — | — |
 | T3.1 | CLIP router (Step 4a) | 3 | T2.2 | 0/5 | PENDING | no | — | — |
 | T3.2 | PaddleOCR engine (Step 4b) | 3 | T3.1 | 0/4 | PENDING | no | — | — |
