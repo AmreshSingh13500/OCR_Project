@@ -18,6 +18,13 @@ AI-powered document ingestion & OCR microservice (Python/FastAPI) for Global Car
 - Update both trackers in the same session as the code change — never leave them stale.
 - **Backward compatibility (Rule 7):** the external contract is frozen — request schema, `WebhookPayload` keys, the 7 exact `error_message` strings, `processing_path` values, env var names. Updates to these are **additive only** (add optional fields, never rename/remove/retype). Internal code may be refactored freely as long as the full pytest suite is green. Breaking a contract surface requires endpoint versioning + Laravel sign-off recorded in TASKS.md §5.
 
+## Execution cadence — one subtask per stop (no auto-loop)
+
+- Implement exactly **ONE subtask at a time**. When it is finished (code written per rules, tests green, both trackers updated per Rule 5), **STOP and report** — do NOT start the next subtask.
+- The user reviews and commits after each subtask. Commit message format: subtask ID first, e.g. `T1.3.2: magic-byte content detection` — this makes `git log` searchable by ID (extends Rule 6 traceability to commits).
+- Continue to the next subtask only when the user says so.
+- Exception: if the user explicitly says "complete the whole task without stopping" (or similar), finish all subtasks of that task, then stop at the task boundary for one commit.
+
 ## Key project constraints (from the plan)
 
 - Files processed in memory (BytesIO) — never written to disk except `DEBUG_SAVE_IMAGES` mode.

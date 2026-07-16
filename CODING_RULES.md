@@ -89,6 +89,7 @@ A subtask may be marked `DONE` in [SUBTASKS.md](SUBTASKS.md) **only when all of 
 - [ ] `[HISTORY]` line appended
 - [ ] Related test (if the plan's AC demands one) is tagged and passing
 - [ ] SUBTASKS.md row updated: status `DONE`, date, note naming the file(s) touched
+- [ ] **STOP** — hand over for review + commit (message: `<subtask-ID>: description`); the next subtask starts only on the user's go-ahead
 
 ## Rule 6 — Traceability check (run anytime)
 

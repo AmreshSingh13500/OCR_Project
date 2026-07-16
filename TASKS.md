@@ -11,6 +11,7 @@
 1. **Pick a task:** choose any task whose `Status = PENDING` **and** every task in its `Depends On` column is `DONE`. Prefer the lowest wave number (see §4). Set its status to `IN_PROGRESS` and stamp `Started`.
 2. **Check subtasks:** open [SUBTASKS.md](SUBTASKS.md) and find the section for that Task ID.
    - Subtasks exist → execute them **one by one** (any order — all subtasks are independent). Mark each `DONE` in SUBTASKS.md with the date as it finishes.
+   - **Stop-per-subtask:** after each subtask finishes, STOP so the user can review and commit (`T1.3.2: description` format). Do not start the next subtask until told to — see CLAUDE.md "Execution cadence".
    - No subtasks (never happens in this plan, but rule anyway) → do the task's Goal directly.
 3. **Roll up:** when **all** subtasks of the task are `DONE`, verify the task's **Acceptance Criteria** from IMPLEMENTATION_PLAN.md.
    - AC pass → set task `Status = DONE`, stamp `Finished`, set `AC ✔` to `yes`, update the `Done/Total` count and the Progress Summary (§2).
