@@ -59,7 +59,7 @@
 |---|---|---|---|---|
 | T2.2.1 | Grayscale conversion (BGR→GRAY) | DONE | 2026-07-17 | `app/pipeline/image_cleaner.py` — `to_grayscale()`. Verified shape (H,W), dtype uint8. |
 | T2.2.2 | Deskew via minAreaRect + confidence gate (skip if \|angle\| < 0.5°) | DONE | 2026-07-17 | `app/pipeline/image_cleaner.py` — `deskew()` + estimators. Found/fixed two bugs vs. the classic reference snippet: (x,y) vs (row,col) coordinate order, and OpenCV ≥4.5's changed minAreaRect angle convention. Empirically validated correction formula against known rotation angles; verified 5° full-page skew → 0.0° residual, already-straight passthrough, blank-image passthrough, dtype/shape, and <2s/image performance (0.14s on A4-sized image). |
-| T2.2.3 | CLAHE (clipLimit=2.0, 8×8) on grayscale before thresholding | PENDING | — | — |
+| T2.2.3 | CLAHE (clipLimit=2.0, 8×8) on grayscale before thresholding | DONE | 2026-07-17 | `app/pipeline/image_cleaner.py` — `apply_clahe()`. Verified: shape/dtype preserved, contrast (std dev) increases on a synthetic low-contrast image (8.04→21.23), high-contrast image processed without error. |
 | T2.2.4 | Adaptive threshold; return both `ocr_ready` (binary) and `vision_ready` (CLAHE) | PENDING | — | — |
 | T2.2.5 | `DEBUG_SAVE_IMAGES=true` → dump each stage with case_id prefix | PENDING | — | — |
 

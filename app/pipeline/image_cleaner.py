@@ -3,6 +3,7 @@
 [TASK]     T2.2 — OpenCV pre-processing (Step 3)
 [SUBTASKS] T2.2.1 grayscale conversion (BGR→GRAY)
            T2.2.2 deskew via minAreaRect (Hough-line fallback) + confidence gate
+           T2.2.3 CLAHE on grayscale before thresholding (glare/lighting fix)
 [SUMMARY]  Deterministic image-cleaning pipeline for Step 3: grayscale → deskew → CLAHE →
            adaptive threshold, producing both an OCR-ready binary image and a CLAHE
            grayscale "vision_ready" image for the LLM vision path (binarization destroys
@@ -11,10 +12,13 @@
            the skew angle from thresholded foreground pixels via minAreaRect, falling
            back to Hough line detection when there isn't enough foreground to trust that
            estimate; it skips rotation entirely below a small-angle/low-confidence gate
-           so it never makes an already-straight image worse.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.2.1, T2.2.2
+           so it never makes an already-straight image worse. `apply_clahe()` runs on
+           the deskewed grayscale before any thresholding — fixes glare/uneven lighting
+           on photographed pages and medicine blister packs.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.2.1, T2.2.2, T2.2.3
 [HISTORY]  2026-07-17  T2.2.1  initial grayscale conversion
            2026-07-17  T2.2.2  deskew with minAreaRect/Hough estimation + confidence gate
+           2026-07-17  T2.2.3  CLAHE contrast enhancement
 """
 
 from typing import Optional
@@ -27,6 +31,9 @@ _DESKEW_MIN_ANGLE_DEG = 0.5
 # [T2.2.2] Fewer foreground pixels than this makes minAreaRect's angle unreliable —
 # fall back to Hough line detection instead of trusting a noisy estimate.
 _MIN_FOREGROUND_PIXELS = 100
+# [T2.2.3] Per plan §4 T2.2.3 exactly.
+_CLAHE_CLIP_LIMIT = 2.0
+_CLAHE_TILE_GRID_SIZE = (8, 8)
 
 
 # [T2.2.1] BGR→GRAY conversion — first step of the cleaning pipeline.
@@ -87,3 +94,11 @@ def deskew(gray: np.ndarray) -> np.ndarray:
     return cv2.warpAffine(
         gray, matrix, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
     )
+
+
+# [T2.2.3] Contrast-limited adaptive histogram equalization — run on grayscale before
+# any thresholding so uneven lighting/glare (e.g. a photographed medicine blister pack)
+# doesn't get baked into a bad binary threshold downstream.
+def apply_clahe(gray: np.ndarray) -> np.ndarray:
+    clahe = cv2.createCLAHE(clipLimit=_CLAHE_CLIP_LIMIT, tileGridSize=_CLAHE_TILE_GRID_SIZE)
+    return clahe.apply(gray)
