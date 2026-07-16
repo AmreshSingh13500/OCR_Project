@@ -47,7 +47,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T2.1.1 | PyMuPDF open; password detection → PasswordProtectedError (exact PRD string) | PENDING | — | — |
+| T2.1.1 | PyMuPDF open; password detection → PasswordProtectedError (exact PRD string) | DONE | 2026-07-16 | `app/pipeline/pdf_handler.py` — `open_pdf()`. Verified with real PyMuPDF-generated PDFs: plain PDF opens normally; AES-256-encrypted PDF raises PasswordProtectedError("Password protected document"). |
 | T2.1.2 | Text extraction from first 3 pages; >100 chars → NativePdfResult | PENDING | — | — |
 | T2.1.3 | Scanned branch: pdf2image @200 DPI, convert ≤5 pages, keep first 3 | PENDING | — | — |
 | T2.1.4 | Document poppler-utils system dep in setup script + README | PENDING | — | — |
