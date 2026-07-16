@@ -4,23 +4,27 @@
 [SUBTASKS] T2.2.1 grayscale conversion (BGR→GRAY)
            T2.2.2 deskew via minAreaRect (Hough-line fallback) + confidence gate
            T2.2.3 CLAHE on grayscale before thresholding (glare/lighting fix)
-[SUMMARY]  Deterministic image-cleaning pipeline for Step 3: grayscale → deskew → CLAHE →
-           adaptive threshold, producing both an OCR-ready binary image and a CLAHE
-           grayscale "vision_ready" image for the LLM vision path (binarization destroys
-           detail the vision model needs). Runs on in-memory numpy arrays only, never
-           touches disk except under DEBUG_SAVE_IMAGES (T2.2.5). `deskew()` estimates
-           the skew angle from thresholded foreground pixels via minAreaRect, falling
-           back to Hough line detection when there isn't enough foreground to trust that
-           estimate; it skips rotation entirely below a small-angle/low-confidence gate
-           so it never makes an already-straight image worse. `apply_clahe()` runs on
-           the deskewed grayscale before any thresholding — fixes glare/uneven lighting
-           on photographed pages and medicine blister packs.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.2.1, T2.2.2, T2.2.3
+           T2.2.4 adaptive threshold; clean_image() pipeline returns CleanedImage
+[SUMMARY]  Deterministic image-cleaning pipeline for Step 3: `clean_image()` runs
+           grayscale → deskew → CLAHE → adaptive threshold, returning a `CleanedImage`
+           with both an OCR-ready binary image and the pre-threshold CLAHE grayscale
+           "vision_ready" image for the LLM vision path (binarization destroys detail the
+           vision model needs). Runs on in-memory numpy arrays only, never touches disk
+           except under DEBUG_SAVE_IMAGES (T2.2.5). `deskew()` estimates the skew angle
+           from thresholded foreground pixels via minAreaRect, falling back to Hough line
+           detection when there isn't enough foreground to trust that estimate; it skips
+           rotation entirely below a small-angle/low-confidence gate so it never makes an
+           already-straight image worse. `apply_clahe()` runs on the deskewed grayscale
+           before any thresholding — fixes glare/uneven lighting on photographed pages
+           and medicine blister packs.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.2.1, T2.2.2, T2.2.3, T2.2.4
 [HISTORY]  2026-07-17  T2.2.1  initial grayscale conversion
            2026-07-17  T2.2.2  deskew with minAreaRect/Hough estimation + confidence gate
            2026-07-17  T2.2.3  CLAHE contrast enhancement
+           2026-07-17  T2.2.4  adaptive threshold + clean_image() pipeline + CleanedImage
 """
 
+from dataclasses import dataclass
 from typing import Optional
 
 import cv2
@@ -34,6 +38,9 @@ _MIN_FOREGROUND_PIXELS = 100
 # [T2.2.3] Per plan §4 T2.2.3 exactly.
 _CLAHE_CLIP_LIMIT = 2.0
 _CLAHE_TILE_GRID_SIZE = (8, 8)
+# [T2.2.4] Per plan §4 T2.2.4 exactly.
+_ADAPTIVE_THRESH_BLOCK_SIZE = 31
+_ADAPTIVE_THRESH_C = 15
 
 
 # [T2.2.1] BGR→GRAY conversion — first step of the cleaning pipeline.
@@ -102,3 +109,28 @@ def deskew(gray: np.ndarray) -> np.ndarray:
 def apply_clahe(gray: np.ndarray) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=_CLAHE_CLIP_LIMIT, tileGridSize=_CLAHE_TILE_GRID_SIZE)
     return clahe.apply(gray)
+
+
+@dataclass
+class CleanedImage:
+    ocr_ready: np.ndarray
+    vision_ready: np.ndarray
+
+
+# [T2.2.4] Full Step-3 pipeline: grayscale → deskew → CLAHE → adaptive threshold.
+# ocr_ready is the binarized output (PaddleOCR, Branch A); vision_ready is the
+# pre-threshold CLAHE grayscale (LLM vision path, Branch B) — binarizing would destroy
+# detail the vision model needs, so that image is deliberately never thresholded.
+def clean_image(image: np.ndarray) -> CleanedImage:
+    gray = to_grayscale(image)
+    deskewed = deskew(gray)
+    vision_ready = apply_clahe(deskewed)
+    ocr_ready = cv2.adaptiveThreshold(
+        vision_ready,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        _ADAPTIVE_THRESH_BLOCK_SIZE,
+        _ADAPTIVE_THRESH_C,
+    )
+    return CleanedImage(ocr_ready=ocr_ready, vision_ready=vision_ready)
