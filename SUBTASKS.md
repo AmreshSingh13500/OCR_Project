@@ -49,7 +49,7 @@
 |---|---|---|---|---|
 | T2.1.1 | PyMuPDF open; password detection → PasswordProtectedError (exact PRD string) | DONE | 2026-07-16 | `app/pipeline/pdf_handler.py` — `open_pdf()`. Verified with real PyMuPDF-generated PDFs: plain PDF opens normally; AES-256-encrypted PDF raises PasswordProtectedError("Password protected document"). |
 | T2.1.2 | Text extraction from first 3 pages; >100 chars → NativePdfResult | DONE | 2026-07-16 | `app/pipeline/pdf_handler.py` — `NativePdfResult` + `extract_native_text()`. Verified with real PyMuPDF PDFs: long text (170 chars) → NativePdfResult; short text and blank page → None. |
-| T2.1.3 | Scanned branch: pdf2image @200 DPI, convert ≤5 pages, keep first 3 | PENDING | — | — |
+| T2.1.3 | Scanned branch: pdf2image @200 DPI, convert ≤5 pages, keep first 3 | DONE | 2026-07-16 | `app/pipeline/pdf_handler.py` — `ScannedPdfResult` + `convert_scanned_pdf()`. poppler-utils not available on this Windows dev box (Linux server dep, T2.1.4/T6.1.1) — verified page-limit logic (last_page clamp to 5, truncate to 3) via a mocked `convert_from_bytes`, matching the plan's 60-page AC exactly; module imports cleanly without poppler installed. |
 | T2.1.4 | Document poppler-utils system dep in setup script + README | PENDING | — | — |
 | T2.1.5 | Zero-page / corrupt PDFs → CorruptFileError | PENDING | — | — |
 
