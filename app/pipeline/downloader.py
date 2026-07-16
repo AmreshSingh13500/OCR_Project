@@ -2,17 +2,21 @@
 [MODULE]   app/pipeline/downloader.py
 [TASK]     T1.3 — File downloader (Step 2a)
 [SUBTASKS] T1.3.1 async streaming download into BytesIO with size cap
+           T1.3.2 magic-byte content detection (pdf | image | unsupported)
            T1.3.3 typed exceptions: DownloadError, FileTooLargeError, UnsupportedFileError
 [SUMMARY]  Safely fetches the source file from file_url fully in memory. Streams via
            httpx with a hard MAX_FILE_SIZE_MB cap, aborting as soon as the running byte
            count exceeds it rather than buffering the whole oversized body first.
-           Magic-byte content detection (T1.3.2) lands in this file too. Nothing is
-           ever written to disk.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.3.1, T1.3.3
+           Identifies the real content type from magic bytes (never trusts the
+           `file_type`/extension the caller supplies) so a mislabeled upload doesn't
+           reach the wrong pipeline branch. Nothing is ever written to disk.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.3.1, T1.3.2, T1.3.3
 [HISTORY]  2026-07-16  T1.3.3  initial typed exception classes
            2026-07-16  T1.3.1  async streaming download with mid-stream size cap
+           2026-07-16  T1.3.2  magic-byte content_kind detection
 """
 
+import enum
 import io
 
 import httpx
@@ -33,6 +37,26 @@ class FileTooLargeError(Exception):
 # [T1.3.3] Raised when the downloaded content's magic bytes are neither PDF nor image.
 class UnsupportedFileError(Exception):
     pass
+
+
+class ContentKind(str, enum.Enum):
+    PDF = "pdf"
+    IMAGE = "image"
+    UNSUPPORTED = "unsupported"
+
+
+_PDF_MAGIC = b"%PDF"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+# [T1.3.2] Detect real content kind by magic bytes — extension/file_type is untrusted input.
+def detect_content_kind(data: bytes) -> ContentKind:
+    if data.startswith(_PDF_MAGIC):
+        return ContentKind.PDF
+    if data.startswith(_JPEG_MAGIC) or data.startswith(_PNG_MAGIC):
+        return ContentKind.IMAGE
+    return ContentKind.UNSUPPORTED
 
 
 # [T1.3.1] Streams the response body chunk by chunk, tracking the running size so the
