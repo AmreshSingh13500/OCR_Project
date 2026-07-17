@@ -2,7 +2,7 @@
 
 **Source of truth:** [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) — descriptions below are one-line summaries only; read the plan section for full detail before implementing.
 **Task tracker:** [TASKS.md](TASKS.md)
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-17
 
 ## Update Rules
 
@@ -86,7 +86,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T4.1.1 | Strict Structured Outputs JSON schema incl. `cost` (PRD clarification #1) | PENDING | — | — |
+| T4.1.1 | Strict Structured Outputs JSON schema incl. `cost` (PRD clarification #1) | DONE | 2026-07-17 | `app/pipeline/llm_extractor.py` — `EXTRACTED_DATA_JSON_SCHEMA` + `RESPONSE_FORMAT`. Mirrors the ExtractedData shape (patient_name, doctor_name, diagnosis, procedure, cost, medicines), all nullable via `type: [T, "null"]` since OpenAI strict mode requires every key in `required` (no optional keys). `schemas.py` (T1.2.2) doesn't exist yet, so this is the first formal definition of the contract shape — T1.2.2 must mirror it when built. Verified structurally: property set == required set, `additionalProperties: false`, JSON-serializable, field order matches plan. `RESPONSE_FORMAT` is ready to pass unchanged to both T4.1.2 (text) and T4.1.3 (vision). |
 | T4.1.2 | Text path: gpt-4o-mini chat completion with extraction system prompt | PENDING | — | — |
 | T4.1.3 | Vision path: ≤3 base64 JPEGs (quality 85, longest side 1536 px) | PENDING | — | — |
 | T4.1.4 | Tenacity retries: 3 attempts, exp backoff 2–30 s, retryable errors only | PENDING | — | — |
