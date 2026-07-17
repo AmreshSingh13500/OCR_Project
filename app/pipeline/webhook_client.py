@@ -3,6 +3,7 @@
 [TASK]     T4.2 — Laravel webhook return (Step 6)
 [SUBTASKS] T4.2.1 async httpx POST with Bearer key, WebhookPayload body
            T4.2.2 tenacity retries on 5xx/connection only; 4xx = no retry, CRITICAL log
+           T4.2.3 retries exhausted -> CRITICAL log with full replayable payload JSON
 [SUMMARY]  Delivers the pipeline's final result to Laravel via the Step-6 webhook.
            `build_webhook_payload()` defines the exact WebhookPayload key set
            (case_id, message_id, status, processing_path, extracted_data,
@@ -14,9 +15,12 @@
            exponential backoff 2-30s, same tenacity shape as T4.1.4's OpenAI retry) via
            `_post_webhook_with_retry()`. A 4xx is a contract/config bug a retry can never
            fix, so it deliberately fails on the first attempt and is logged CRITICAL
-           immediately here. Retries-exhausted (5xx/connection) is not yet handled — that
-           terminal case is T4.2.3.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.2.1, T4.2.2
+           immediately. If the 5xx/connection retries are exhausted instead, `send_webhook()`
+           logs CRITICAL with the full payload JSON so a human can replay the delivery
+           manually (no persistence layer/dead-letter queue in Phase 1 — plan §8
+           clarification #3) — this call never raises to its caller either way; delivery
+           failure is fully terminal and self-contained here.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.2.1, T4.2.2, T4.2.3
 [HISTORY]  2026-07-17  T4.2.1  initial build_webhook_payload() + send_webhook() bare POST —
                                 additive-only new module, no existing contract surface
                                 touched (Rule 7 gate n/a)
@@ -26,6 +30,10 @@
                                 unwrapped 4xx HTTPStatusError and logs CRITICAL —
                                 no schemas.py/routes.py/error-string changes (Rule 7
                                 gate n/a), webhook_client.py is internal-only
+           2026-07-17  T4.2.3  send_webhook() now also catches _RetryableWebhookError
+                                (retries exhausted) and logs CRITICAL with the full
+                                payload JSON; T4.2 is feature-complete — no
+                                schemas.py/routes.py/error-string changes (Rule 7 n/a)
 """
 
 import json
@@ -105,10 +113,14 @@ async def _post_webhook_with_retry(payload: dict) -> None:
         raise _RetryableWebhookError(str(exc)) from exc
 
 
-# [T4.2.2] Entry point. A 4xx fails on the first attempt (see above) and is logged
+# [T4.2.2] A 4xx fails on the first attempt (see _post_webhook_with_retry) and is logged
 # CRITICAL here as a contract/config bug — no automatic recovery is possible, a human
-# needs to fix the URL/key/payload shape. Retries-exhausted (5xx/connection) is not yet
-# caught here; that terminal case is T4.2.3.
+# needs to fix the URL/key/payload shape.
+# [T4.2.3] If the 5xx/connection retries are exhausted instead, _post_webhook_with_retry
+# reraises _RetryableWebhookError; caught here and logged CRITICAL with the full payload
+# JSON so a human can replay the delivery manually (plan §8 clarification #3 — no
+# dead-letter queue in Phase 1). Either failure path is terminal: send_webhook() never
+# raises to its caller, since the CRITICAL log is itself the only recovery mechanism.
 async def send_webhook(payload: dict) -> None:
     try:
         await _post_webhook_with_retry(payload)
@@ -117,5 +129,11 @@ async def send_webhook(payload: dict) -> None:
             "Webhook delivery failed with non-retryable HTTP %d (contract/config bug); "
             "payload=%s",
             exc.response.status_code,
+            json.dumps(payload),
+        )
+    except _RetryableWebhookError:
+        logger.critical(
+            "Webhook delivery failed after %d attempts (retries exhausted); payload=%s",
+            _WEBHOOK_MAX_RETRIES,
             json.dumps(payload),
         )

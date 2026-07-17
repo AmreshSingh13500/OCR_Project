@@ -3,15 +3,18 @@
 [TASK]     T4.2 — Laravel webhook return (Step 6)
 [SUBTASKS] T4.2.1 async httpx POST with Bearer key, WebhookPayload body
            T4.2.2 tenacity retries on 5xx/connection only; 4xx = no retry, CRITICAL log
+           T4.2.3 retries exhausted -> CRITICAL log with full replayable payload JSON
 [SUMMARY]  respx-mocked tests for webhook_client.py. No file fixtures needed — the
            webhook only ever sends a plain dict payload, so this doesn't depend on
            T5.1.1's fixture assembly. Verifies the exact WebhookPayload key set, that
            the POST carries the Bearer LARAVEL_WEBHOOK_KEY header and JSON body, that a
-           5xx is retried until it succeeds, and that a 4xx fails on the first attempt
-           with a CRITICAL log (no retry).
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.2.1, T4.2.2
+           5xx is retried until it succeeds, that a 4xx fails on the first attempt with
+           a CRITICAL log (no retry), and that exhausting all 5xx retries logs CRITICAL
+           with the full payload JSON (for manual replay).
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.2.1, T4.2.2, T4.2.3
 [HISTORY]  2026-07-17  T4.2.1  initial success-path tests
            2026-07-17  T4.2.2  add 5xx-retries-then-succeeds and 4xx-no-retry-CRITICAL tests
+           2026-07-17  T4.2.3  add 5xx-retries-exhausted-CRITICAL-with-payload test
 """
 
 import json
@@ -126,3 +129,31 @@ async def test_send_webhook_4xx_fails_immediately_and_logs_critical(caplog):
     critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
     assert len(critical_records) == 1
     assert "401" in critical_records[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_send_webhook_5xx_retries_exhausted_logs_critical_with_payload(caplog):
+    """[T4.2.3] AC: 5xx x4 -> retries exhausted after 3 attempts, CRITICAL log with full payload JSON."""
+    payload = build_webhook_payload(
+        case_id="case-4",
+        message_id="msg-4",
+        status="error",
+        processing_path="native_pdf",
+        extracted_data=None,
+        error_message="Internal processing error",
+    )
+
+    with caplog.at_level(logging.CRITICAL):
+        with respx.mock:
+            route = respx.post(settings.LARAVEL_WEBHOOK_URL).mock(
+                side_effect=[Response(503), Response(502), Response(500), Response(500)]
+            )
+
+            await send_webhook(payload)
+
+            assert route.call_count == 3
+
+    critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+    assert len(critical_records) == 1
+    message = critical_records[0].getMessage()
+    assert json.dumps(payload) in message
