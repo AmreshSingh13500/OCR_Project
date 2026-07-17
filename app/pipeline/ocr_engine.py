@@ -3,6 +3,7 @@
 [TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
 [SUBTASKS] T3.2.1 initialize PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False) once at startup
            T3.2.2 extract_text(): OCR ocr_ready image, join lines top-to-bottom, log confidence
+           T3.2.3 extract_text_async(): asyncio.Lock + run_in_executor thread-safety guard
 [SUMMARY]  Local CPU OCR engine for Branch A (printed documents). `load_paddleocr()`
            initializes a single PaddleOCR instance at app startup (lifespan) — angle
            classification on (photographed documents may be slightly rotated), English,
@@ -12,12 +13,20 @@
            `ocr_ready` binary image and joins detected lines in top-to-bottom reading
            order — sorted explicitly by each box's y-coordinate rather than trusting
            PaddleOCR's own internal detection order (which empirically is already sorted,
-           but that's an implementation detail of the library, not a contract).
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.2.1, T3.2.2
+           but that's an implementation detail of the library, not a contract). PaddleOCR
+           itself is not thread-safe under concurrent calls within one process, so
+           `extract_text_async()` is the only entry point pipeline code should call from
+           request-handling paths — it serializes access with an `asyncio.Lock` and runs
+           the blocking OCR call via `run_in_executor` so the event loop is never blocked
+           by CPU-bound inference. Gunicorn's 4 worker processes still give 4-way
+           parallelism; the lock only serializes calls within a single worker process.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.2.1, T3.2.2, T3.2.3
 [HISTORY]  2026-07-17  T3.2.1  initialize PaddleOCR at startup
            2026-07-17  T3.2.2  add extract_text() — OCR + top-to-bottom join + confidence log
+           2026-07-17  T3.2.3  add extract_text_async() — asyncio.Lock + run_in_executor guard
 """
 
+import asyncio
 import logging
 
 import numpy as np
@@ -76,3 +85,23 @@ def extract_text(ocr_ready: np.ndarray) -> str:
         texts.append(text)
 
     return "\n".join(texts)
+
+
+# [T3.2.3] The shared PaddleOCR instance is not thread-safe under concurrent calls
+# within one process — this lock serializes access so only one extract_text() call
+# touches the engine at a time in this worker. Gunicorn's 4 worker processes each get
+# their own instance (loaded independently at startup), so this still gives 4-way
+# parallelism across the deployment; it only serializes within a single process.
+_paddle_ocr_lock = asyncio.Lock()
+
+
+async def extract_text_async(ocr_ready: np.ndarray) -> str:
+    """
+    Thread-safe async entry point for extract_text() — the one pipeline code should call
+    from request-handling paths. Serializes access to the shared PaddleOCR engine via
+    an asyncio.Lock, and runs the blocking OCR call in the default executor so the event
+    loop stays free to handle other work while inference runs.
+    """
+    async with _paddle_ocr_lock:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, extract_text, ocr_ready)
