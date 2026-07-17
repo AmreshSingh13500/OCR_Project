@@ -18,6 +18,10 @@
            2026-07-16  T1.1.3  wire configure_logging() into lifespan startup
            2026-07-17  T3.1.1  load CLIP model at startup in lifespan
            2026-07-17  T3.2.1  load PaddleOCR engine at startup in lifespan
+           2026-07-17  T3.2.4  added defensive import-order comment (classifier before
+                                ocr_engine) after discovering a torch/paddlepaddle DLL
+                                conflict on Windows dev boxes — order unchanged, just
+                                documented so it's never accidentally reordered
 """
 
 import logging
@@ -25,6 +29,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+# NOTE: keep classifier (torch) imported before ocr_engine (paddlepaddle). On at least
+# one Windows dev machine, importing paddlepaddle before torch in the same process
+# breaks torch's DLL loading (WinError 127 on torch/lib/shm.dll) — a native library
+# conflict between the two frameworks, not an app bug. Not reproduced as a problem in
+# this order; likely Windows-only since the deploy target is Ubuntu (T6.1), but keep
+# this import order defensively until verified moot on the Linux target (see TASKS.md
+# §5, 2026-07-17 T3.2.4 note, for the full investigation).
 from app.pipeline.classifier import load_clip, set_clip
 from app.pipeline.ocr_engine import load_paddleocr, set_paddleocr
 from app.utils.logging import configure_logging

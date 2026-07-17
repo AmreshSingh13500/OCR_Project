@@ -2,8 +2,10 @@
 [MODULE]   app/config.py
 [TASK]     T1.1 — Project scaffold
            T3.1 — CLIP router (Step 4a)
+           T3.2 — PaddleOCR engine (Step 4b)
 [SUBTASKS] T1.1.2 pydantic-settings Settings; fail fast on missing required env vars
            T3.1.2 CLIP_LABELS candidate labels for zero-shot document classification
+           T3.1.3 / T3.2.4 BRANCH_A_PADDLEOCR / BRANCH_B_VISION frozen branch constants
 [SUMMARY]  Central configuration for the OCR microservice. `Settings` (pydantic-settings
            BaseSettings) loads every env var from IMPLEMENTATION_PLAN.md §3 and is
            instantiated at import time, so a missing required var raises immediately and
@@ -14,10 +16,17 @@
            environment-driven, including `CLIP_LABELS` — the candidate label strings CLIP
            scores each document image against; index 0 is the "printed" label that routes
            to Branch A, the rest fall through to Branch B (T3.1.3 owns the routing rule
-           itself). Labels are tunable during the T7.2 accuracy pass.
-[PLAN]     IMPLEMENTATION_PLAN.md §3 → T1.1.2; §4 → T3.1.2
+           itself). Labels are tunable during the T7.2 accuracy pass. `BRANCH_A_PADDLEOCR`
+           / `BRANCH_B_VISION` reuse the exact frozen `processing_path` contract strings
+           (CODING_RULES.md Rule 7) and live here — not in classifier.py or ocr_engine.py —
+           specifically so neither module needs to import the other's heavy ML dependency
+           (torch vs paddlepaddle) just to reference a branch name; see T3.2.4's history
+           note for the concrete bug this avoids.
+[PLAN]     IMPLEMENTATION_PLAN.md §3 → T1.1.2; §4 → T3.1.2, T3.1.3, T3.2.4
 [HISTORY]  2026-07-16  T1.1.2  initial Settings class + fixed pipeline constants
            2026-07-17  T3.1.2  add CLIP_LABELS constant
+           2026-07-17  T3.2.4  move BRANCH_A_PADDLEOCR/BRANCH_B_VISION here from
+                                classifier.py (see classifier.py [HISTORY] for why)
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,3 +72,11 @@ CLIP_LABELS = [
     "an ultrasound or radiology scan image",
     "a photo of a medicine box or blister pack",
 ]
+
+# [T3.1.3] Reuses the exact processing_path contract strings (IMPLEMENTATION_PLAN.md §1,
+# CODING_RULES.md Rule 7) rather than inventing separate branch names — T4.3.2 sets
+# processing_path directly from these values. Deliberately kept in this lightweight
+# config module (no torch/paddle deps) rather than classifier.py or ocr_engine.py, so
+# neither of those needs to import the other's heavy ML dependency — see T3.2.4.
+BRANCH_A_PADDLEOCR = "paddleocr"
+BRANCH_B_VISION = "vision_api"

@@ -4,6 +4,7 @@
 [SUBTASKS] T3.2.1 initialize PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False) once at startup
            T3.2.2 extract_text(): OCR ocr_ready image, join lines top-to-bottom, log confidence
            T3.2.3 extract_text_async(): asyncio.Lock + run_in_executor thread-safety guard
+           T3.2.4 should_reroute_to_vision(): <20-char fallback rule, logs the reroute
 [SUMMARY]  Local CPU OCR engine for Branch A (printed documents). `load_paddleocr()`
            initializes a single PaddleOCR instance at app startup (lifespan) — angle
            classification on (photographed documents may be slightly rotated), English,
@@ -20,10 +21,22 @@
            the blocking OCR call via `run_in_executor` so the event loop is never blocked
            by CPU-bound inference. Gunicorn's 4 worker processes still give 4-way
            parallelism; the lock only serializes calls within a single worker process.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.2.1, T3.2.2, T3.2.3
+           `should_reroute_to_vision()` is a separate decision step the orchestrator
+           (T4.3) calls after getting OCR text — it doesn't reroute anything itself
+           (extract_text() has no notion of "branches"), it just answers whether this
+           page's OCR output is too short to trust and logs when it is. It imports
+           `BRANCH_B_VISION` from app/config.py, not from classifier.py — importing
+           classifier.py (torch) here hit a real Windows DLL conflict with paddlepaddle
+           (paddle-before-torch import order breaks torch's shm.dll load); config.py has
+           no ML dependencies, so it can't trigger that conflict.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.2.1, T3.2.2, T3.2.3, T3.2.4
 [HISTORY]  2026-07-17  T3.2.1  initialize PaddleOCR at startup
            2026-07-17  T3.2.2  add extract_text() — OCR + top-to-bottom join + confidence log
            2026-07-17  T3.2.3  add extract_text_async() — asyncio.Lock + run_in_executor guard
+           2026-07-17  T3.2.4  add should_reroute_to_vision() — <20-char fallback rule;
+                                imports BRANCH_B_VISION from app/config.py (not
+                                classifier.py) to avoid a torch/paddle DLL load-order
+                                conflict — see classifier.py [HISTORY] for the full story
 """
 
 import asyncio
@@ -32,7 +45,13 @@ import logging
 import numpy as np
 from paddleocr import PaddleOCR
 
+from app.config import BRANCH_B_VISION
+
 logger = logging.getLogger(__name__)
+
+# [T3.2.4] Per plan §4 T3.2.4 exactly — below this many characters, PaddleOCR likely
+# failed to read the page (blank, garbled, or misrouted) and vision is the safer bet.
+_MIN_OCR_CHARS = 20
 
 
 # [T3.2.1] Initialize PaddleOCR once at app startup (lifespan) — CPU only; angle
@@ -105,3 +124,20 @@ async def extract_text_async(ocr_ready: np.ndarray) -> str:
     async with _paddle_ocr_lock:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, extract_text, ocr_ready)
+
+
+# [T3.2.4] Per plan §4 T3.2.4 exactly. Doesn't perform the reroute itself — the
+# orchestrator (T4.3) owns branch dispatch — just answers the question and logs when
+# the answer is yes, so the reroute is visible in the logs even before T4.3 exists.
+def should_reroute_to_vision(text: str) -> bool:
+    """
+    True when a Branch-A page's OCR output is too short to trust (<20 chars per the
+    plan's fallback rule) and should be rerouted to Branch B (vision) instead.
+    """
+    if len(text) < _MIN_OCR_CHARS:
+        logger.warning(
+            "OCR fallback: only %d char(s) extracted (<%d threshold) — rerouting page to %s",
+            len(text), _MIN_OCR_CHARS, BRANCH_B_VISION,
+        )
+        return True
+    return False

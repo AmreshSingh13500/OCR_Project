@@ -14,12 +14,21 @@
            logging the winning label + confidence per call (case_id is picked up
            automatically from the logging contextvar set up in T1.1.3 — not passed in
            here); `route_branch()` turns its (label_index, confidence) output into a
-           branch decision.
+           branch decision using `BRANCH_A_PADDLEOCR`/`BRANCH_B_VISION` from app/config.py
+           (not defined in this module — see [HISTORY] below for why).
 [PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.1
 [HISTORY]  2026-07-17  T3.1.1  load clip-vit-base-patch32 at startup
            2026-07-17  T3.1.3  add route_branch() routing rule + confidence threshold
            2026-07-17  T3.1.4  add classify() — CLIP inference on vision_ready image
            2026-07-17  T3.1.5  log label + confidence per classify() call
+           2026-07-17  T3.2.4  moved BRANCH_A_PADDLEOCR/BRANCH_B_VISION out to
+                                app/config.py: ocr_engine.py needed BRANCH_B_VISION for
+                                its reroute log message, and importing this module (torch)
+                                from ocr_engine.py (paddlepaddle) hit a real Windows DLL
+                                conflict — paddle imported before torch in the same
+                                process breaks torch's shm.dll load (WinError 127).
+                                Moving the constants to the lightweight config module
+                                (no ML deps) removes the cross-import entirely.
 """
 
 import logging
@@ -29,19 +38,13 @@ import numpy as np
 import torch
 from transformers import CLIPProcessor, CLIPModel
 
-from app.config import CLIP_LABELS
+from app.config import CLIP_LABELS, BRANCH_A_PADDLEOCR, BRANCH_B_VISION
 
 logger = logging.getLogger(__name__)
 
 # [T3.1.3] Per plan §4 T3.1.3 exactly — below this confidence, vision is the safe fallback
 # even when the top label happens to be the printed one.
 _ROUTING_CONFIDENCE_THRESHOLD = 0.4
-
-# [T3.1.3] Reuses the exact processing_path contract strings (IMPLEMENTATION_PLAN.md §1,
-# CODING_RULES.md Rule 7) rather than inventing separate branch names — T4.3.2 sets
-# processing_path directly from this value.
-BRANCH_A_PADDLEOCR = "paddleocr"
-BRANCH_B_VISION = "vision_api"
 
 
 # [T3.1.1] Load openai/clip-vit-base-patch32 model once at app startup (lifespan).
