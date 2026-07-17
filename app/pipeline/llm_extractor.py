@@ -5,6 +5,7 @@
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
            T4.1.3 Vision path: <=3 base64 JPEGs (quality 85, longest side 1536px)
            T4.1.4 Tenacity retries: 3 attempts, exp backoff 2-30s, retryable errors only
+           T4.1.5 All-fields-null flag -> success + informative error_message (PRD clarification #2)
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape (patient_name, doctor_name, diagnosis, procedure, cost,
@@ -21,9 +22,14 @@
            which retries transient OpenAI failures (timeout, connection, rate limit, 5xx)
            up to `OPENAI_MAX_RETRIES` times with exponential backoff (2-30s) and raises
            `LLMError` once retries are exhausted; non-retryable errors (401, 400) are not
-           in the retry set and propagate immediately on the first attempt. The all-nulls
-           flag (T4.1.5) is not set yet.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2, T4.1.3, T4.1.4
+           in the retry set and propagate immediately on the first attempt.
+           `is_all_fields_null()` + `ALL_FIELDS_NULL_MESSAGE` let the orchestrator (T4.3,
+           not built yet) detect a blurry/unreadable document: when every extracted field
+           is null, Laravel still gets `status:"success"` (Manual Review is Laravel's
+           call per PRD §6.2) but with the frozen `error_message` below set alongside it
+           (PRD clarification #2, IMPLEMENTATION_PLAN.md §8-2) — this module only exposes
+           the detection + message; T4.3 owns building the actual webhook payload.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2, T4.1.3, T4.1.4, T4.1.5
 [HISTORY]  2026-07-17  T4.1.1  initial schema definition — first formal definition of
                                 the ExtractedData shape (schemas.py/T1.2.2 not yet
                                 implemented); additive-only, no existing contract to
@@ -42,6 +48,10 @@
                                 logic); no schemas.py/routes.py/webhook_client.py/
                                 error-string changes (Rule 7 gate n/a) — LLMError is a
                                 new internal exception, T4.3.3 will map it later
+           2026-07-17  T4.1.5  add is_all_fields_null() + ALL_FIELDS_NULL_MESSAGE;
+                                Rule 7 gate checked — this is a NEW frozen error string
+                                (PRD clarification #2), not an edit to an existing one,
+                                so it's additive; exact wording locked from this commit on
 """
 
 import base64
@@ -207,3 +217,18 @@ def _create_chat_completion(messages: list):
         messages=messages,
         response_format=RESPONSE_FORMAT,
     )
+
+
+# [T4.1.5] Frozen exact string (PRD clarification #2, IMPLEMENTATION_PLAN.md §8-2) — set
+# alongside status:"success" (never status:"error") when every extracted field is null.
+# Never edit this wording once shipped; CODING_RULES.md Rule 7 treats error_message
+# strings as frozen. Laravel does the actual Manual Review flagging (PRD §6.2); this
+# service only signals the condition.
+ALL_FIELDS_NULL_MESSAGE = "All fields empty - possible unreadable document"
+
+
+# [T4.1.5] extracted_data is the dict returned by extract_from_text()/extract_from_images(),
+# always exactly the 6 ExtractedData keys (strict schema, T4.1.1) — "all null" means the
+# model found nothing at all, the signal for a blurry/unreadable document.
+def is_all_fields_null(extracted_data: dict) -> bool:
+    return all(value is None for value in extracted_data.values())

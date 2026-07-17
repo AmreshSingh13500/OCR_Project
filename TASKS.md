@@ -28,7 +28,7 @@
 | Metric | Value |
 |---|---|
 | Tasks done | 6 / 17 |
-| Subtasks done | 30 / 68 |
+| Subtasks done | 31 / 68 |
 | Current phase | 4 |
 | Active tasks | T4.1 |
 | Blocked tasks | — |
@@ -46,7 +46,7 @@
 | T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T3.1 | CLIP router (Step 4a) | 3 | T2.2 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T3.2 | PaddleOCR engine (Step 4b) | 3 | T3.1 | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
-| T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 4/6 | IN_PROGRESS | no | 2026-07-17 | — |
+| T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 5/6 | IN_PROGRESS | no | 2026-07-17 | — |
 | T4.2 | Laravel webhook return (Step 6) | 4 | T1.1 | 0/3 | PENDING | no | — | — |
 | T4.3 | Pipeline orchestrator | 4 | T1.3, T2.1, T2.2, T3.1, T3.2, T4.1, T4.2 | 0/5 | PENDING | no | — | — |
 | T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 0/4 | PENDING | no | — | — |
