@@ -1,7 +1,9 @@
 """
 [MODULE]   app/pipeline/orchestrator.py
 [TASK]     T4.3 — Pipeline orchestrator
-[SUBTASKS] T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
+           T1.2 — Auth & API endpoints
+[SUBTASKS] T1.2.2 import ProcessRequest from app.schemas instead of a local duplicate
+           T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
                   wins any mixed-page case
            T4.3.3 error mapping table — 7 exception -> error_message strings exactly
@@ -22,7 +24,14 @@
            and every page's image is sent together (extract_from_text/extract_from_images
            are mutually exclusive — no single call can mix raw text and images); only
            when every page's OCR output was trusted does processing_path stay
-           'paddleocr'. `_run_extraction()` (T4.3.1) does Steps 2-5 and returns/raises;
+           'paddleocr'. `ProcessRequest` is now imported from `app.schemas` (T1.2.2) —
+           it used to be defined here as a plain dataclass since schemas.py didn't exist
+           yet; now that it does, this module consumes the canonical Pydantic model
+           instead of keeping a second, drifting definition (CLAUDE.md: internal code may
+           be refactored freely provided the full pytest suite stays green — every
+           existing call site here already constructed it via keyword args only, so the
+           dataclass-to-BaseModel swap is behavior-preserving). `_run_extraction()`
+           (T4.3.1) does Steps 2-5 and returns/raises;
            `run_pipeline()` (T4.3.4) wraps it in a top-level try/except so exactly one
            webhook call happens either way — the success branch builds a 'success'
            payload from `_run_extraction()`'s result, the except branch maps whatever
@@ -44,11 +53,8 @@
            overwritten — and `run_pipeline()` logs one line with the total wall-clock ms
            plus that per-step breakdown at the very end, on both the success and error
            paths (a `_timed()` block records its elapsed time on the way out even if the
-           block raised). `schemas.py` (T1.2.2) doesn't exist yet, so `ProcessRequest`
-           is defined here as the first formal definition of the PRD §4.1 request shape
-           (same precedent as T4.1.1's EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's
-           build_webhook_payload) — T1.2.2 must mirror it when built.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4, T4.3.5
+           block raised).
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4, T4.3.5; T1.2.2
 [HISTORY]  2026-07-17  T4.3.1  initial run_pipeline() wiring Steps 2->6 — new module, no
                                 schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a)
@@ -83,13 +89,17 @@
                                 error-string changes (Rule 7 gate n/a) — logging-only
                                 addition, no change to any existing return value/payload
                                 shape
+           2026-07-17  T1.2.2  replaced the local ProcessRequest dataclass with an
+                                import from the newly-built app.schemas — Rule 7 gate
+                                checked: same 6 fields, same 3 required/3 optional split,
+                                additive/contract-safe; no behavior change (BaseModel
+                                construction via keyword args is drop-in compatible with
+                                the dataclass it replaces), full suite re-verified green
 """
 
 import logging
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -122,6 +132,7 @@ from app.pipeline.pdf_handler import (
     open_pdf,
 )
 from app.pipeline.webhook_client import build_webhook_payload, send_webhook
+from app.schemas import ProcessRequest
 from app.utils.logging import bind_case_context
 
 logger = logging.getLogger(__name__)
@@ -187,20 +198,6 @@ def _timed(timings: _StepTimings, step: str):
         yield
     finally:
         timings.record(step, (time.monotonic() - start) * 1000)
-
-
-# [T4.3.1] First formal definition of the PRD §4.1 ProcessRequest shape — schemas.py
-# (T1.2.2) doesn't exist yet. file_type/file_name/source_channel are carried for contract
-# completeness but unused by run_pipeline itself: content kind is always re-derived from
-# magic bytes (T1.3.2), never trusted from the caller-supplied file_type.
-@dataclass
-class ProcessRequest:
-    case_id: str
-    message_id: str
-    file_url: str
-    file_type: Optional[str] = None
-    file_name: Optional[str] = None
-    source_channel: Optional[str] = None
 
 
 def _decode_image_bytes(data: bytes) -> np.ndarray:
