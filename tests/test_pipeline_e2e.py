@@ -2,19 +2,28 @@
 [MODULE]   tests/test_pipeline_e2e.py
 [TASK]     T4.3 — Pipeline orchestrator
 [SUBTASKS] T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
+           T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
+                  wins any mixed-page case
 [SUMMARY]  Unit tests for orchestrator.py's run_pipeline() wiring. All of run_pipeline's
            collaborators (download, PDF handling, CLIP, PaddleOCR, OpenAI, webhook) are
            monkeypatched at the orchestrator module level so this exercises only the
            branching/wiring logic itself — each collaborator already has its own
            correctness verified in its own subtask (real fixture-based tests for these
-           paths are T5.1's job, once tests/fixtures/ exists). Covers only the happy-path
-           scenarios T4.3.1 wires: native PDF text path, scanned/printed image ->
-           paddleocr path, and a direct (non-PDF) image -> vision_api path. Error mapping
-           (T4.3.3) and the guaranteed-one-webhook try/except (T4.3.4) aren't built yet,
-           so error scenarios aren't tested here.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1
+           paths are T5.1's job, once tests/fixtures/ exists). Covers the single-page
+           happy paths T4.3.1 wires (native PDF text, scanned/printed -> paddleocr,
+           direct image -> vision_api) plus T4.3.2's multi-page processing_path rule:
+           a mixed page set (one paddleocr page + one vision page, or one clean OCR page
+           + one low-yield-reroute page) reports 'vision_api' and sends every page's
+           image, never mixing text and images in one LLM call; an all-paddleocr multi-
+           page set stays 'paddleocr' with concatenated text. Error mapping (T4.3.3) and
+           the guaranteed-one-webhook try/except (T4.3.4) aren't built yet, so error
+           scenarios beyond the single UnsupportedFileError case aren't tested here.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2
 [HISTORY]  2026-07-17  T4.3.1  initial happy-path wiring tests (native_pdf, paddleocr,
                                 vision_api)
+           2026-07-17  T4.3.2  add mixed-page tests: vision-routed page mixed with a
+                                paddleocr page, low-OCR-yield reroute mixed with a clean
+                                OCR page, and an all-paddleocr multi-page control case
 """
 
 import io
@@ -140,6 +149,124 @@ async def test_run_pipeline_direct_image_handwritten_uses_vision_path(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_mixed_pages_one_vision_page_wins_vision_path(monkeypatch):
+    """[T4.3.2] AC: page 1 routes paddleocr, page 2 routes vision_api -> whole request reports 'vision_api', both pages' images sent, extract_from_text never called."""
+    sent_payloads = []
+    captured_images = []
+
+    monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"%PDF-fake")))
+    monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.PDF)
+    monkeypatch.setattr(orchestrator, "open_pdf", lambda data: _FakeDoc(page_count=2))
+    monkeypatch.setattr(orchestrator, "extract_native_text", lambda doc: None)
+    monkeypatch.setattr(
+        orchestrator, "convert_scanned_pdf",
+        lambda data, page_count: _FakeScannedResult(images=[_FakePilImage(), _FakePilImage()]),
+    )
+    monkeypatch.setattr(orchestrator, "_pil_to_bgr", lambda image: np.zeros((10, 10, 3), dtype=np.uint8))
+    monkeypatch.setattr(orchestrator, "clean_image", lambda image, case_id=None: _fake_cleaned_image())
+    monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
+    monkeypatch.setattr(orchestrator, "route_branch", _sequence_fn(["paddleocr", "vision_api"]))
+    monkeypatch.setattr(orchestrator, "extract_text_async", _async_return("first page ocr text, plenty long enough"))
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text: False)
+
+    def _fake_extract_from_images(images):
+        captured_images.extend(images)
+        return {"patient_name": None, "doctor_name": None, "diagnosis": None,
+                "procedure": None, "cost": None, "medicines": None}
+
+    monkeypatch.setattr(orchestrator, "extract_from_images", _fake_extract_from_images)
+    monkeypatch.setattr(orchestrator, "extract_from_text", _fail("extract_from_text should not run when any page needs vision"))
+    monkeypatch.setattr(orchestrator, "send_webhook", _record_webhook(sent_payloads))
+
+    await run_pipeline(ProcessRequest(case_id="case-5", message_id="msg-5", file_url="https://x/mixed.pdf"))
+
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["processing_path"] == "vision_api"
+    assert len(captured_images) == 2  # both pages' vision_ready images sent, not just the vision-routed one
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_mixed_pages_low_ocr_yield_reroute_wins_vision_path(monkeypatch):
+    """[T4.3.2] AC: both pages route paddleocr but page 2's OCR yield is too low (T3.2.4 reroute) -> whole request reports 'vision_api'."""
+    sent_payloads = []
+    captured_images = []
+
+    monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"%PDF-fake")))
+    monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.PDF)
+    monkeypatch.setattr(orchestrator, "open_pdf", lambda data: _FakeDoc(page_count=2))
+    monkeypatch.setattr(orchestrator, "extract_native_text", lambda doc: None)
+    monkeypatch.setattr(
+        orchestrator, "convert_scanned_pdf",
+        lambda data, page_count: _FakeScannedResult(images=[_FakePilImage(), _FakePilImage()]),
+    )
+    monkeypatch.setattr(orchestrator, "_pil_to_bgr", lambda image: np.zeros((10, 10, 3), dtype=np.uint8))
+    monkeypatch.setattr(orchestrator, "clean_image", lambda image, case_id=None: _fake_cleaned_image())
+    monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
+    monkeypatch.setattr(orchestrator, "route_branch", lambda label, conf: "paddleocr")
+    monkeypatch.setattr(
+        orchestrator, "extract_text_async",
+        _sequence_async_fn(["plenty of readable text on this page", "x"]),
+    )
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", _sequence_fn([False, True]))
+
+    def _fake_extract_from_images(images):
+        captured_images.extend(images)
+        return {"patient_name": None, "doctor_name": None, "diagnosis": None,
+                "procedure": None, "cost": None, "medicines": None}
+
+    monkeypatch.setattr(orchestrator, "extract_from_images", _fake_extract_from_images)
+    monkeypatch.setattr(orchestrator, "extract_from_text", _fail("extract_from_text should not run when a page is rerouted to vision"))
+    monkeypatch.setattr(orchestrator, "send_webhook", _record_webhook(sent_payloads))
+
+    await run_pipeline(ProcessRequest(case_id="case-6", message_id="msg-6", file_url="https://x/mixed2.pdf"))
+
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["processing_path"] == "vision_api"
+    assert len(captured_images) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_multi_page_all_paddleocr_stays_paddleocr_path(monkeypatch):
+    """[T4.3.2] AC: both pages route paddleocr and OCR succeeds on both -> processing_path stays 'paddleocr' (not mixed), text concatenated."""
+    sent_payloads = []
+    captured_text = {}
+
+    monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"%PDF-fake")))
+    monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.PDF)
+    monkeypatch.setattr(orchestrator, "open_pdf", lambda data: _FakeDoc(page_count=2))
+    monkeypatch.setattr(orchestrator, "extract_native_text", lambda doc: None)
+    monkeypatch.setattr(
+        orchestrator, "convert_scanned_pdf",
+        lambda data, page_count: _FakeScannedResult(images=[_FakePilImage(), _FakePilImage()]),
+    )
+    monkeypatch.setattr(orchestrator, "_pil_to_bgr", lambda image: np.zeros((10, 10, 3), dtype=np.uint8))
+    monkeypatch.setattr(orchestrator, "clean_image", lambda image, case_id=None: _fake_cleaned_image())
+    monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
+    monkeypatch.setattr(orchestrator, "route_branch", lambda label, conf: "paddleocr")
+    monkeypatch.setattr(
+        orchestrator, "extract_text_async",
+        _sequence_async_fn(["page one text long enough", "page two text long enough"]),
+    )
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text: False)
+
+    def _fake_extract_from_text(text):
+        captured_text["value"] = text
+        return {"patient_name": None, "doctor_name": None, "diagnosis": None,
+                "procedure": None, "cost": None, "medicines": None}
+
+    monkeypatch.setattr(orchestrator, "extract_from_text", _fake_extract_from_text)
+    monkeypatch.setattr(orchestrator, "extract_from_images", _fail("extract_from_images should not run when no page needs vision"))
+    monkeypatch.setattr(orchestrator, "send_webhook", _record_webhook(sent_payloads))
+
+    await run_pipeline(ProcessRequest(case_id="case-7", message_id="msg-7", file_url="https://x/two_page_scan.pdf"))
+
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["processing_path"] == "paddleocr"
+    assert "page one text long enough" in captured_text["value"]
+    assert "page two text long enough" in captured_text["value"]
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_unsupported_content_raises(monkeypatch):
     """[T4.3.1] Neither PDF nor image magic bytes -> UnsupportedFileError (mapping to a webhook error is T4.3.3's job)."""
     from app.pipeline.downloader import UnsupportedFileError
@@ -166,6 +293,23 @@ class _FakePilImage:
 def _async_return(value):
     async def _fn(*args, **kwargs):
         return value
+    return _fn
+
+
+def _sequence_fn(values: list):
+    """Returns each value in order on successive calls — one per page, in call order."""
+    values_iter = iter(values)
+
+    def _fn(*args, **kwargs):
+        return next(values_iter)
+    return _fn
+
+
+def _sequence_async_fn(values: list):
+    values_iter = iter(values)
+
+    async def _fn(*args, **kwargs):
+        return next(values_iter)
     return _fn
 
 

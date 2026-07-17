@@ -2,30 +2,41 @@
 [MODULE]   app/pipeline/orchestrator.py
 [TASK]     T4.3 — Pipeline orchestrator
 [SUBTASKS] T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
+           T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
+                  wins any mixed-page case
 [SUMMARY]  Wires the full pipeline together for one accepted request: download (Step 2a)
            -> native/scanned PDF detection (Step 2b) or direct-image passthrough ->
            OpenCV cleaning (Step 3) -> CLIP routing + PaddleOCR/vision extraction
            (Step 4) -> OpenAI structured extraction (Step 5) -> Laravel webhook delivery
            (Step 6). A native PDF (text layer > NATIVE_PDF_MIN_CHARS) skips straight from
-           Step 2b to Step 5; an image attached directly (not inside a PDF) skips Step 2b
-           entirely and starts at Step 3 — same as a scanned PDF's rasterized pages. If
-           any page ends up needing vision (originally routed there, or rerouted after a
-           low-yield OCR result per T3.2.4), the whole call uses the vision path with
-           every page's image rather than mixing text and image content in one LLM call
-           (extract_from_text/extract_from_images are mutually exclusive); T4.3.2 owns
-           formally verifying that "vision wins mixed" rule. `schemas.py` (T1.2.2)
-           doesn't exist yet, so `ProcessRequest` is defined here as the first formal
-           definition of the PRD §4.1 request shape (same precedent as T4.1.1's
-           EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's build_webhook_payload) — T1.2.2 must
-           mirror it when built. This subtask is happy-path wiring only: the 7-exception
-           error mapping (T4.3.3) and the top-level try/except guaranteeing exactly one
-           webhook per accepted request (T4.3.4) are separate subtasks not yet applied
-           here, so any exception raised in this chain currently propagates uncaught
-           (same "bare call, error handling comes later" pattern as T4.1.2/T4.2.1).
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1
+           Step 2b to Step 5 with processing_path='native_pdf'; an image attached
+           directly (not inside a PDF) skips Step 2b entirely and starts at Step 3 — same
+           as a scanned PDF's rasterized pages. Per plan §4 T4.3.2 exactly: if any page
+           ends up needing vision (originally routed there, or rerouted after a low-yield
+           OCR result per T3.2.4), processing_path is 'vision_api' for the whole request
+           and every page's image is sent together (extract_from_text/extract_from_images
+           are mutually exclusive — no single call can mix raw text and images); only
+           when every page's OCR output was trusted does processing_path stay
+           'paddleocr'. `schemas.py` (T1.2.2) doesn't exist yet, so `ProcessRequest` is
+           defined here as the first formal definition of the PRD §4.1 request shape
+           (same precedent as T4.1.1's EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's
+           build_webhook_payload) — T1.2.2 must mirror it when built. These two subtasks
+           are happy-path wiring only: the 7-exception error mapping (T4.3.3) and the
+           top-level try/except guaranteeing exactly one webhook per accepted request
+           (T4.3.4) are separate subtasks not yet applied here, so any exception raised
+           in this chain currently propagates uncaught (same "bare call, error handling
+           comes later" pattern as T4.1.2/T4.2.1).
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2
 [HISTORY]  2026-07-17  T4.3.1  initial run_pipeline() wiring Steps 2->6 — new module, no
                                 schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a)
+           2026-07-17  T4.3.2  tagged the processing_path decision in
+                                _extract_from_pages() (vision wins any mixed-page case,
+                                per plan §4 T4.3.2 exactly) and added dedicated
+                                mixed-page/reroute/multi-page-success tests — no
+                                behavior change from T4.3.1's implementation, formal
+                                verification + tagging only; no schemas.py/routes.py/
+                                webhook_client.py/error-string changes (Rule 7 gate n/a)
 """
 
 import logging
@@ -82,11 +93,9 @@ def _pil_to_bgr(image: Image.Image) -> np.ndarray:
     return cv2.cvtColor(np.array(image.convert("RGB")), cv2.COLOR_RGB2BGR)
 
 
-# Steps 3+4 for one or more page images: cleans each, classifies it, and extracts via
-# PaddleOCR or vision per page. A page routed to Branch A whose OCR yield is too low
-# (T3.2.4) is rerouted to vision. Per plan §4 T4.3.2 ("vision wins mixed"), if *any* page
-# ends up needing vision, the whole call uses the vision path with every page's
-# vision_ready image instead of mixing text and image content in one LLM call.
+# [T4.3.1] Steps 3+4 for one or more page images: cleans each, classifies it, and
+# extracts via PaddleOCR or vision per page. A page routed to Branch A whose OCR yield
+# is too low (T3.2.4) is rerouted to vision.
 async def _extract_from_pages(images: list[np.ndarray], case_id: str) -> tuple[dict, str]:
     ocr_texts: list[str] = []
     vision_images: list[np.ndarray] = []
@@ -107,6 +116,12 @@ async def _extract_from_pages(images: list[np.ndarray], case_id: str) -> tuple[d
 
         needs_vision = True
 
+    # [T4.3.2] processing_path per plan §4 T4.3.2 exactly: 'paddleocr' only when every
+    # page's OCR output was trusted; 'vision_api' wins the instant any single page needed
+    # vision (originally routed there, or rerouted after a low-yield OCR result) — a
+    # mixed-page document is never reported as 'paddleocr'. All pages' vision_ready
+    # images are sent together in that case, since extract_from_text/extract_from_images
+    # are mutually exclusive (no single call can mix raw text and images).
     if needs_vision:
         return extract_from_images(vision_images), BRANCH_B_VISION
     return extract_from_text("\n".join(ocr_texts)), BRANCH_A_PADDLEOCR
