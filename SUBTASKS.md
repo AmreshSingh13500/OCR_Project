@@ -78,7 +78,7 @@
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
 | T3.2.1 | Init PaddleOCR (angle_cls, en, CPU) once at startup | DONE | 2026-07-17 | `app/pipeline/ocr_engine.py` — `load_paddleocr()` calls `PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False)` exactly per plan; wired into `app/main.py` lifespan after CLIP loading, mirroring the `set_clip`/`get_clip` pattern. paddleocr/paddlepaddle aren't safely installable in the shared global Python env (a first attempt force-downgraded `protobuf`, breaking unrelated tooling — reverted); created an isolated project `.venv` (already gitignored) and verified for real there instead: constructor accepted the plan's exact kwargs with no deprecation errors (confirmed via ppocr's own debug namespace dump), and the full `main.py` lifespan loads both CLIP and PaddleOCR correctly in one run. |
-| T3.2.2 | `extract_text(image) -> str` — reading-order line join, debug confidences | PENDING | — | — |
+| T3.2.2 | `extract_text(image) -> str` — reading-order line join, debug confidences | DONE | 2026-07-17 | `app/pipeline/ocr_engine.py` — `extract_text()`: runs `ocr.ocr(image, cls=True)`, sorts detected lines by box top-y explicitly (doesn't rely on PaddleOCR's internal order), joins with `\n`, logs each line's text+confidence at DEBUG. Verified in `.venv` with real PaddleOCR: text drawn in scrambled vertical order comes back correctly top-to-bottom; blank image → `""` (PaddleOCR returns `[None]` for no detections, handled explicitly). |
 | T3.2.3 | Thread-safety: asyncio.Lock + run_in_executor (never block event loop) | PENDING | — | — |
 | T3.2.4 | Fallback: <20 chars OCR output → reroute page to vision, log reroute | PENDING | — | — |
 
