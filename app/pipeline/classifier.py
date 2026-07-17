@@ -3,19 +3,26 @@
 [TASK]     T3.1 — CLIP router (Step 4a)
 [SUBTASKS] T3.1.1 load clip-vit-base-patch32 at startup (lifespan), CPU, no_grad
            T3.1.3 routing rule: printed label -> Branch A; else/low-confidence -> Branch B
+           T3.1.4 classify(): CLIP inference on the vision_ready (CLAHE grayscale -> RGB) image
 [SUMMARY]  Zero-shot document classification via CLIP (Contrastive Language-Image Pre-training).
            Loads the `openai/clip-vit-base-patch32` model once per worker at startup via
            HuggingFace Transformers on CPU. This module handles model loading and inference
            for routing documents into Branch A (PaddleOCR path) or Branch B (Vision API path).
-           `route_branch()` is the decision rule applied to CLIP's output (T3.1.4, which runs
-           the actual per-image inference, calls it with the winning label index + score).
+           `classify()` runs CLIP zero-shot scoring against `CLIP_LABELS` on the
+           `vision_ready` grayscale image (converted to RGB — CLIP expects 3-channel input);
+           `route_branch()` turns its (label_index, confidence) output into a branch decision.
 [PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.1
 [HISTORY]  2026-07-17  T3.1.1  load clip-vit-base-patch32 at startup
            2026-07-17  T3.1.3  add route_branch() routing rule + confidence threshold
+           2026-07-17  T3.1.4  add classify() — CLIP inference on vision_ready image
 """
 
+import cv2
+import numpy as np
 import torch
 from transformers import CLIPProcessor, CLIPModel
+
+from app.config import CLIP_LABELS
 
 # [T3.1.3] Per plan §4 T3.1.3 exactly — below this confidence, vision is the safe fallback
 # even when the top label happens to be the printed one.
@@ -74,3 +81,26 @@ def route_branch(top_label_index: int, confidence: float) -> str:
     if top_label_index == 0 and confidence >= _ROUTING_CONFIDENCE_THRESHOLD:
         return BRANCH_A_PADDLEOCR
     return BRANCH_B_VISION
+
+
+# [T3.1.4] Runs CLIP zero-shot scoring against CLIP_LABELS on the vision_ready image.
+# vision_ready (image_cleaner.CleanedImage) is single-channel CLAHE grayscale — CLIP was
+# trained on 3-channel images, so it's converted to RGB (channel-replicated, no color
+# information is invented) before going through the processor.
+def classify(vision_ready: np.ndarray) -> tuple[int, float]:
+    """
+    Run CLIP zero-shot classification on a vision_ready grayscale image.
+    Returns (top_label_index, confidence) where confidence is the softmax probability
+    of the winning label among CLIP_LABELS.
+    """
+    model, processor = get_clip()
+    rgb = cv2.cvtColor(vision_ready, cv2.COLOR_GRAY2RGB)
+
+    inputs = processor(text=CLIP_LABELS, images=rgb, return_tensors="pt", padding=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    probs = outputs.logits_per_image.softmax(dim=1)[0]
+    top_label_index = int(torch.argmax(probs))
+    confidence = float(probs[top_label_index])
+    return top_label_index, confidence
