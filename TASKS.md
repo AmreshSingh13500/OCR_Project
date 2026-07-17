@@ -28,7 +28,7 @@
 | Metric | Value |
 |---|---|
 | Tasks done | 8 / 17 |
-| Subtasks done | 37 / 68 |
+| Subtasks done | 38 / 68 |
 | Current phase | 4 |
 | Active tasks | T4.3 |
 | Blocked tasks | — |
@@ -48,7 +48,7 @@
 | T3.2 | PaddleOCR engine (Step 4b) | 3 | T3.1 | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 6/6 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.2 | Laravel webhook return (Step 6) | 4 | T1.1 | 3/3 | DONE | yes | 2026-07-17 | 2026-07-17 |
-| T4.3 | Pipeline orchestrator | 4 | T1.3, T2.1, T2.2, T3.1, T3.2, T4.1, T4.2 | 2/5 | IN_PROGRESS | no | 2026-07-17 | — |
+| T4.3 | Pipeline orchestrator | 4 | T1.3, T2.1, T2.2, T3.1, T3.2, T4.1, T4.2 | 3/5 | IN_PROGRESS | no | 2026-07-17 | — |
 | T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 0/4 | PENDING | no | — | — |
 | T5.2 | Security hardening (app level) | 5 | T1.2, T1.3 | 0/4 | PENDING | no | — | — |
 | T6.1 | Server provisioning script | 6 | — | 0/3 | PENDING | no | — | — |

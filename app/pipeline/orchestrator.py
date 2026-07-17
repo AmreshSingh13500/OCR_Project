@@ -4,6 +4,8 @@
 [SUBTASKS] T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
                   wins any mixed-page case
+           T4.3.3 error mapping table — 7 exception -> error_message strings exactly
+                  per plan
 [SUMMARY]  Wires the full pipeline together for one accepted request: download (Step 2a)
            -> native/scanned PDF detection (Step 2b) or direct-image passthrough ->
            OpenCV cleaning (Step 3) -> CLIP routing + PaddleOCR/vision extraction
@@ -17,16 +19,22 @@
            and every page's image is sent together (extract_from_text/extract_from_images
            are mutually exclusive — no single call can mix raw text and images); only
            when every page's OCR output was trusted does processing_path stay
-           'paddleocr'. `schemas.py` (T1.2.2) doesn't exist yet, so `ProcessRequest` is
-           defined here as the first formal definition of the PRD §4.1 request shape
-           (same precedent as T4.1.1's EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's
-           build_webhook_payload) — T1.2.2 must mirror it when built. These two subtasks
-           are happy-path wiring only: the 7-exception error mapping (T4.3.3) and the
-           top-level try/except guaranteeing exactly one webhook per accepted request
-           (T4.3.4) are separate subtasks not yet applied here, so any exception raised
-           in this chain currently propagates uncaught (same "bare call, error handling
-           comes later" pattern as T4.1.2/T4.2.1).
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2
+           'paddleocr'. `map_exception_to_error_message()` (T4.3.3) holds the frozen
+           7-exception -> error_message lookup from plan §4 T4.3.3's table, keyed by
+           exact exception type (never isinstance) since those exception classes were
+           deliberately kept flat with no shared hierarchy for exactly this reason (see
+           T1.3.3's note); anything not in the table falls through to "Internal
+           processing error" with the full traceback logged. `schemas.py` (T1.2.2)
+           doesn't exist yet, so `ProcessRequest` is defined here as the first formal
+           definition of the PRD §4.1 request shape (same precedent as T4.1.1's
+           EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's build_webhook_payload) — T1.2.2 must
+           mirror it when built. These three subtasks don't yet add up to a fault-
+           tolerant pipeline: map_exception_to_error_message() is a pure mapping
+           function, not wired into a try/except anywhere, so an exception raised in
+           run_pipeline's chain still propagates uncaught today — the top-level
+           try/except guaranteeing exactly one webhook per accepted request (T4.3.4) is
+           what will call this mapping and is a separate subtask not yet applied here.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3
 [HISTORY]  2026-07-17  T4.3.1  initial run_pipeline() wiring Steps 2->6 — new module, no
                                 schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a)
@@ -37,6 +45,13 @@
                                 behavior change from T4.3.1's implementation, formal
                                 verification + tagging only; no schemas.py/routes.py/
                                 webhook_client.py/error-string changes (Rule 7 gate n/a)
+           2026-07-17  T4.3.3  add _ERROR_MESSAGES + map_exception_to_error_message() —
+                                Rule 7 gate checked: these are the 7 *existing* frozen
+                                error_message strings from plan §4 T4.3.3's table
+                                (already fixed at plan-authoring time, none invented
+                                here), reproduced verbatim, not edited — additive/
+                                contract-safe; no schemas.py/routes.py/webhook_client.py
+                                changes
 """
 
 import logging
@@ -58,17 +73,59 @@ from app.pipeline.ocr_engine import extract_text_async, should_reroute_to_vision
 from app.config import BRANCH_A_PADDLEOCR, BRANCH_B_VISION
 from app.pipeline.downloader import (
     ContentKind,
+    DownloadError,
+    FileTooLargeError,
     UnsupportedFileError,
     detect_content_kind,
     download_file,
 )
 from app.pipeline.image_cleaner import clean_image
-from app.pipeline.llm_extractor import extract_from_images, extract_from_text
-from app.pipeline.pdf_handler import convert_scanned_pdf, extract_native_text, open_pdf
+from app.pipeline.llm_extractor import LLMError, extract_from_images, extract_from_text
+from app.pipeline.pdf_handler import (
+    CorruptFileError,
+    PasswordProtectedError,
+    convert_scanned_pdf,
+    extract_native_text,
+    open_pdf,
+)
 from app.pipeline.webhook_client import build_webhook_payload, send_webhook
 from app.utils.logging import bind_case_context
 
 logger = logging.getLogger(__name__)
+
+
+# [T4.3.3] Exact 7-exception -> error_message mapping per plan §4 T4.3.3 — every string
+# is frozen (CODING_RULES.md Rule 7): never edit an existing value, only add new rows.
+# A flat dict keyed by exact exception type (not an isinstance chain) by design — the
+# downloader/pdf_handler exceptions were deliberately kept as flat Exception subclasses
+# with no shared hierarchy specifically to keep this lookup unambiguous (see T1.3.3's
+# note): no exception type can ever match more than one row here.
+_ERROR_MESSAGES: dict[type[Exception], str] = {
+    PasswordProtectedError: "Password protected document",
+    DownloadError: "Failed to download source file",
+    FileTooLargeError: "File exceeds size limit",
+    UnsupportedFileError: "Unsupported file type",
+    CorruptFileError: "Corrupt or unreadable file",
+    LLMError: "AI extraction service unavailable",
+}
+
+# [T4.3.3] The plan's 7th row ("any uncaught Exception") — the only row that also
+# requires a full traceback in the logs, since anything not in _ERROR_MESSAGES is by
+# definition an unanticipated bug rather than a recognized failure mode.
+_DEFAULT_ERROR_MESSAGE = "Internal processing error"
+
+
+# [T4.3.3] Maps a pipeline exception to its exact frozen error_message string. Falls
+# through to _DEFAULT_ERROR_MESSAGE for anything not in the table, logging the full
+# traceback in that case (plan §4 T4.3.3) so an unanticipated bug is never silently
+# swallowed. Does not catch anything itself — wiring this into a top-level try/except
+# that guarantees exactly one webhook per request is T4.3.4's job.
+def map_exception_to_error_message(exc: Exception) -> str:
+    message = _ERROR_MESSAGES.get(type(exc))
+    if message is not None:
+        return message
+    logger.error("Unmapped exception during pipeline execution: %r", exc, exc_info=exc)
+    return _DEFAULT_ERROR_MESSAGE
 
 
 # [T4.3.1] First formal definition of the PRD §4.1 ProcessRequest shape — schemas.py

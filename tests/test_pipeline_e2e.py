@@ -4,6 +4,8 @@
 [SUBTASKS] T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
                   wins any mixed-page case
+           T4.3.3 error mapping table — 7 exception -> error_message strings exactly
+                  per plan
 [SUMMARY]  Unit tests for orchestrator.py's run_pipeline() wiring. All of run_pipeline's
            collaborators (download, PDF handling, CLIP, PaddleOCR, OpenAI, webhook) are
            monkeypatched at the orchestrator module level so this exercises only the
@@ -15,27 +17,35 @@
            a mixed page set (one paddleocr page + one vision page, or one clean OCR page
            + one low-yield-reroute page) reports 'vision_api' and sends every page's
            image, never mixing text and images in one LLM call; an all-paddleocr multi-
-           page set stays 'paddleocr' with concatenated text. Error mapping (T4.3.3) and
-           the guaranteed-one-webhook try/except (T4.3.4) aren't built yet, so error
-           scenarios beyond the single UnsupportedFileError case aren't tested here.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2
+           page set stays 'paddleocr' with concatenated text. Also verifies T4.3.3's
+           map_exception_to_error_message() against all 7 rows of the plan's table
+           (parametrized) plus the fallback row's traceback logging. The guaranteed-
+           one-webhook try/except (T4.3.4) isn't built yet, so map_exception_to_error_
+           message() is tested standalone here, not via a run_pipeline error scenario.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3
 [HISTORY]  2026-07-17  T4.3.1  initial happy-path wiring tests (native_pdf, paddleocr,
                                 vision_api)
            2026-07-17  T4.3.2  add mixed-page tests: vision-routed page mixed with a
                                 paddleocr page, low-OCR-yield reroute mixed with a clean
                                 OCR page, and an all-paddleocr multi-page control case
+           2026-07-17  T4.3.3  add parametrized map_exception_to_error_message() tests
+                                for all 7 plan-table rows + the fallback traceback-log
+                                assertion
 """
 
 import io
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
 
 from app.pipeline import orchestrator
-from app.pipeline.downloader import ContentKind
+from app.pipeline.downloader import ContentKind, DownloadError, FileTooLargeError, UnsupportedFileError
 from app.pipeline.image_cleaner import CleanedImage
+from app.pipeline.llm_extractor import LLMError
 from app.pipeline.orchestrator import ProcessRequest, run_pipeline
+from app.pipeline.pdf_handler import CorruptFileError, PasswordProtectedError
 
 
 @dataclass
@@ -269,13 +279,40 @@ async def test_run_pipeline_multi_page_all_paddleocr_stays_paddleocr_path(monkey
 @pytest.mark.asyncio
 async def test_run_pipeline_unsupported_content_raises(monkeypatch):
     """[T4.3.1] Neither PDF nor image magic bytes -> UnsupportedFileError (mapping to a webhook error is T4.3.3's job)."""
-    from app.pipeline.downloader import UnsupportedFileError
-
     monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"not a real file")))
     monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.UNSUPPORTED)
 
     with pytest.raises(UnsupportedFileError):
         await run_pipeline(ProcessRequest(case_id="case-4", message_id="msg-4", file_url="https://x/file.bin"))
+
+
+@pytest.mark.parametrize(
+    "exc, expected_message",
+    [
+        (PasswordProtectedError("x"), "Password protected document"),
+        (DownloadError("x"), "Failed to download source file"),
+        (FileTooLargeError("x"), "File exceeds size limit"),
+        (UnsupportedFileError("x"), "Unsupported file type"),
+        (CorruptFileError("x"), "Corrupt or unreadable file"),
+        (LLMError("x"), "AI extraction service unavailable"),
+        (ValueError("some unanticipated bug"), "Internal processing error"),
+    ],
+)
+def test_map_exception_to_error_message_matches_plan_table(exc, expected_message):
+    """[T4.3.3] AC: each of the plan's 7 exception rows (incl. the uncaught-Exception fallback) maps to its exact frozen error_message string."""
+    assert orchestrator.map_exception_to_error_message(exc) == expected_message
+
+
+def test_map_exception_to_error_message_logs_traceback_for_unmapped_exception(caplog):
+    """[T4.3.3] AC: an unmapped exception ("any uncaught Exception" row) logs the full traceback, per plan §4 T4.3.3."""
+    with caplog.at_level(logging.ERROR):
+        try:
+            raise ValueError("boom")
+        except ValueError as exc:
+            message = orchestrator.map_exception_to_error_message(exc)
+
+    assert message == "Internal processing error"
+    assert any(record.exc_info for record in caplog.records)
 
 
 # --- test helpers -----------------------------------------------------------------
