@@ -6,6 +6,7 @@
            T4.1.3 Vision path: <=3 base64 JPEGs (quality 85, longest side 1536px)
            T4.1.4 Tenacity retries: 3 attempts, exp backoff 2-30s, retryable errors only
            T4.1.5 All-fields-null flag -> success + informative error_message (PRD clarification #2)
+           T4.1.6 Log prompt/completion token usage per call
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape (patient_name, doctor_name, diagnosis, procedure, cost,
@@ -29,7 +30,11 @@
            call per PRD §6.2) but with the frozen `error_message` below set alongside it
            (PRD clarification #2, IMPLEMENTATION_PLAN.md §8-2) — this module only exposes
            the detection + message; T4.3 owns building the actual webhook payload.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2, T4.1.3, T4.1.4, T4.1.5
+           `_call_chat_completion()` also logs prompt/completion/total token usage at
+           INFO on every successful call (not per failed retry attempt, since a raised
+           exception carries no usage data) — routing-decision-adjacent cost telemetry,
+           not medical field data, so it isn't subject to CLAUDE.md's DEBUG-only rule.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2, T4.1.3, T4.1.4, T4.1.5, T4.1.6
 [HISTORY]  2026-07-17  T4.1.1  initial schema definition — first formal definition of
                                 the ExtractedData shape (schemas.py/T1.2.2 not yet
                                 implemented); additive-only, no existing contract to
@@ -52,6 +57,9 @@
                                 Rule 7 gate checked — this is a NEW frozen error string
                                 (PRD clarification #2), not an edit to an existing one,
                                 so it's additive; exact wording locked from this commit on
+           2026-07-17  T4.1.6  add token-usage logging in _call_chat_completion(); no
+                                schemas.py/routes.py/webhook_client.py/error-string
+                                changes (Rule 7 gate n/a) — logging-only addition
 """
 
 import base64
@@ -202,6 +210,15 @@ def _call_chat_completion(messages: list) -> dict:
         raise LLMError(
             f"OpenAI extraction failed after {OPENAI_MAX_RETRIES} attempts: {exc}"
         ) from exc
+
+    # [T4.1.6] Only reachable on a successful call — a raised exception above carries no
+    # usage data, so there is nothing to log for exhausted-retry/non-retryable failures.
+    usage = response.usage
+    logger.info(
+        "OpenAI extraction token usage: prompt=%d completion=%d total=%d",
+        usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+    )
+
     return json.loads(response.choices[0].message.content)
 
 

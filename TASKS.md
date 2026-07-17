@@ -27,10 +27,10 @@
 
 | Metric | Value |
 |---|---|
-| Tasks done | 6 / 17 |
-| Subtasks done | 31 / 68 |
+| Tasks done | 7 / 17 |
+| Subtasks done | 32 / 68 |
 | Current phase | 4 |
-| Active tasks | T4.1 |
+| Active tasks | — |
 | Blocked tasks | — |
 
 ---
@@ -46,7 +46,7 @@
 | T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T3.1 | CLIP router (Step 4a) | 3 | T2.2 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T3.2 | PaddleOCR engine (Step 4b) | 3 | T3.1 | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
-| T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 5/6 | IN_PROGRESS | no | 2026-07-17 | — |
+| T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 6/6 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.2 | Laravel webhook return (Step 6) | 4 | T1.1 | 0/3 | PENDING | no | — | — |
 | T4.3 | Pipeline orchestrator | 4 | T1.3, T2.1, T2.2, T3.1, T3.2, T4.1, T4.2 | 0/5 | PENDING | no | — | — |
 | T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 0/4 | PENDING | no | — | — |
@@ -86,4 +86,5 @@ Tasks inside the same wave can run **in parallel**. A wave may start as soon as 
 | 2026-07-17 | T3.1 AC | Plan's exact AC references `printed_report.jpg`/`handwritten.jpg`/`medicine_box.jpg` fixtures owned by T5.1.1 (not yet built). Verified equivalent behavior with synthetic proxies instead (same precedent as T2.1/T2.2): real downloaded CLIP model, synthetic printed-text image → correctly scores the printed label at high confidence → routes to Branch A; random-noise image → non-printed label → Branch B; inference 0.29s (<1.5s AC); model-loads-once confirmed via lifespan test + startup log. Re-verify against real fixtures once T5.1.1 lands (T5.1.2 AC-test pass). |
 | 2026-07-17 | T3.2.1 / dev env | Installing `paddlepaddle`/`paddleocr` into the shared global Python environment force-downgraded `protobuf` (6.31.0→3.20.2) via a transitive dependency conflict, breaking unrelated tooling (`google-generativeai`, `mcp`, `opentelemetry-proto`); reverted immediately, no lasting damage. Created an isolated project `.venv` (already in `.gitignore`) with the full pinned `requirements.txt` installed, and verified T3.2.1 there instead. **Any future subtask touching PaddleOCR (T3.2.2–T3.2.4) should also be tested via `.venv/Scripts/python.exe` on this machine, not the global `python`.** |
 | 2026-07-17 | T6.1/T6.2 (decision) | **Deployment target is AlmaLinux 9, not Ubuntu** (user decision, supersedes the plan's "Dedicated Ubuntu Server" wording — plan update pending). Consequences for Phase 6: (1) `deploy/setup_server.sh` must use `dnf`, not `apt` — including the existing T2.1.4 poppler-utils line (same package name in AlmaLinux repos); (2) SELinux is enforcing by default — nginx→gunicorn proxying requires `setsebool -P httpd_can_network_connect 1` or the proxy 502s with clean app logs; (3) `paddleocr` transitively installs non-headless `opencv-python`/`opencv-contrib-python`, which need `mesa-libGL` + `glib2` on a GUI-less server or import fails on `libGL.so.1`; (4) T6.1.2 firewall = `firewalld`, not UFW; certbot via EPEL; (5) default `python3` is 3.9 — install `python3.12` (appstream, 9.4+) to match dev; (6) re-verify the torch/paddle load-order behavior (see T3.2.4 note) on this OS. No `app/` code changes required — application code is OS-portable. |
+| 2026-07-17 | T4.1 AC | Plan's exact AC includes "live smoke test extracts correct fields from native.pdf fixture" — that fixture is owned by T5.1.1 (not yet built) and a live test would require a real (non-placeholder) `OPENAI_API_KEY` and incur actual API cost. Verified the rest of the AC instead (same precedent as T3.1/T3.2): schema enforced (T4.1.1, structural strict-mode checks), nulls handled correctly incl. the empty-list-vs-null distinction (T4.1.2/T4.1.3/T4.1.5), retry fires exactly `OPENAI_MAX_RETRIES`=3 times on mocked 500s then raises `LLMError` (T4.1.4), non-retryable 401 propagates unwrapped on the first attempt, token usage logged only on success (T4.1.6) — all via mocked `openai.OpenAI` client in the project `.venv`, no network calls made. **Re-run a real smoke test against `native.pdf` once T5.1.1 lands and a real `OPENAI_API_KEY` is available.** |
 | 2026-07-17 | T3.2.4 / dev env | Found a real Windows DLL conflict in the `.venv`: importing `paddlepaddle` anywhere in a process before `torch` breaks torch's DLL loading (`shm.dll`, WinError 127) — confirmed it's paddle-before-torch load *order* that breaks it (torch-before-paddle works fine), not merely an unnecessary cross-import (tried `KMP_DUPLICATE_LIB_OK=TRUE`, didn't help; this is a genuine native export mismatch, not the classic OpenMP duplicate-lib issue). Moved `BRANCH_A_PADDLEOCR`/`BRANCH_B_VISION` from `classifier.py` to `app/config.py` so `ocr_engine.py` no longer needs to import `classifier.py` at all (removes an *unnecessary* coupling), but this does **not** fully fix the underlying conflict — `main.py`'s import order (classifier/torch, then ocr_engine/paddle) is what actually avoids it, and now has a defensive comment warning against reordering. Not investigated further: `WinError 127`/`shm.dll` are Windows-specific, and the deploy target is Ubuntu (T6.1) — likely moot in production, but **re-verify no torch/paddle load-order issue exists once T6.1's Linux server is up**, and remove the defensive comment in `main.py` if confirmed moot there. |
