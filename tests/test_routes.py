@@ -3,6 +3,7 @@
 [TASK]     T1.2 — Auth & API endpoints
 [SUBTASKS] T1.2.3 POST /api/v1/process — validate -> BackgroundTask -> 202 immediately
            T1.2.4 GET /health — 200 with clip_loaded/paddle_loaded flags, unauthenticated
+           T1.2.5 validate file_url scheme is https; reject invalid URLs with 400
 [SUMMARY]  TestClient-level tests for app/api/routes.py, mounted on a minimal FastAPI app
            built here (not app.main:app) so these tests don't trigger main.py's lifespan
            (real CLIP/PaddleOCR model loads) just to exercise HTTP routing/validation/
@@ -11,10 +12,14 @@
            it was scheduled with so the "enqueued as a BackgroundTask" behavior itself is
            verifiable, not just the HTTP response shape. /health tests set app.state
            directly (no lifespan run) to exercise both the "not loaded yet" and "loaded"
-           flag states, and confirm no auth header is required.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4
+           flag states, and confirm no auth header is required. The file_url tests
+           confirm a non-https scheme and a host-less URL both yield 400 (distinct from
+           the 422 a structurally malformed body gets) and that run_pipeline is never
+           scheduled in either case.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4, T1.2.5
 [HISTORY]  2026-07-17  T1.2.3  initial 202/401/422 endpoint tests
            2026-07-17  T1.2.4  add /health tests (model-loaded flags false/true, no auth)
+           2026-07-17  T1.2.5  add invalid-file_url -> 400 tests
 """
 
 import pytest
@@ -80,6 +85,28 @@ def test_malformed_body_returns_422(client):
         json={"case_id": "case-1"},
     )
     assert response.status_code == 422
+    assert client.app.state.scheduled == []
+
+
+def test_non_https_file_url_returns_400(client):
+    """[T1.2.5] AC: non-https file_url (e.g. http://) -> 400."""
+    response = client.post(
+        "/api/v1/process",
+        headers=AUTH_HEADERS,
+        json={"case_id": "case-1", "message_id": "msg-1", "file_url": "http://x/doc.pdf"},
+    )
+    assert response.status_code == 400
+    assert client.app.state.scheduled == []
+
+
+def test_hostless_file_url_returns_400(client):
+    """[T1.2.5] AC: obviously invalid file_url (no host) -> 400."""
+    response = client.post(
+        "/api/v1/process",
+        headers=AUTH_HEADERS,
+        json={"case_id": "case-1", "message_id": "msg-1", "file_url": "not-a-url"},
+    )
+    assert response.status_code == 400
     assert client.app.state.scheduled == []
 
 
