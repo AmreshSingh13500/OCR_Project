@@ -2,6 +2,7 @@
 [MODULE]   app/pipeline/orchestrator.py
 [TASK]     T4.3 — Pipeline orchestrator
            T1.2 — Auth & API endpoints
+           T5.2 — Security hardening (app level)
 [SUBTASKS] T1.2.2 import ProcessRequest from app.schemas instead of a local duplicate
            T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
@@ -11,6 +12,8 @@
            T4.3.4 top-level try/except: every accepted request -> exactly one webhook
                   call
            T4.3.5 per-request timing log: total ms + per-step ms
+           T5.2.2 log extracted-field presence booleans at INFO, actual values at
+                  DEBUG only, on the success path
 [SUMMARY]  Wires the full pipeline together for one accepted request: download (Step 2a)
            -> native/scanned PDF detection (Step 2b) or direct-image passthrough ->
            OpenCV cleaning (Step 3) -> CLIP routing + PaddleOCR/vision extraction
@@ -53,7 +56,11 @@
            overwritten — and `run_pipeline()` logs one line with the total wall-clock ms
            plus that per-step breakdown at the very end, on both the success and error
            paths (a `_timed()` block records its elapsed time on the way out even if the
-           block raised).
+           block raised). `_log_extracted_data_privacy_safe()` (T5.2.2) runs on the
+           success branch only, right before the webhook payload is built: an INFO log
+           with per-field presence booleans (never the values), and a DEBUG log with the
+           actual field values — CLAUDE.md's "medical field values at DEBUG only" rule
+           enforced structurally here rather than left to caller discipline.
 [PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4, T4.3.5; T1.2.2
 [HISTORY]  2026-07-17  T4.3.1  initial run_pipeline() wiring Steps 2->6 — new module, no
                                 schemas.py/routes.py/webhook_client.py/error-string
@@ -95,6 +102,16 @@
                                 additive/contract-safe; no behavior change (BaseModel
                                 construction via keyword args is drop-in compatible with
                                 the dataclass it replaces), full suite re-verified green
+           2026-07-17  T5.2.2  add _log_extracted_data_privacy_safe(), called from
+                                run_pipeline()'s success branch right before the webhook
+                                payload is built — logs an INFO line with per-field
+                                presence booleans only, and a separate DEBUG line with
+                                the actual field values, so a deployment running at the
+                                default INFO level never has medical field values in its
+                                logs; no schemas.py/routes.py/webhook_client.py/
+                                error-string changes here (Rule 7 gate n/a — this only
+                                adds new log lines, no change to the webhook payload
+                                itself or any return value)
 """
 
 import logging
@@ -198,6 +215,17 @@ def _timed(timings: _StepTimings, step: str):
         yield
     finally:
         timings.record(step, (time.monotonic() - start) * 1000)
+
+
+# [T5.2.2] Privacy-safe logging of extracted medical data (CLAUDE.md: "medical field
+# values at DEBUG only"). Field *presence* is not sensitive on its own (it's just a
+# shape descriptor — "did the LLM find a diagnosis or not"), so it's safe at INFO; the
+# actual values (patient name, diagnosis, etc.) are only ever logged at DEBUG, which is
+# off by default (config.py's LOG_LEVEL default is INFO).
+def _log_extracted_data_privacy_safe(extracted_data: dict) -> None:
+    presence = {field: value is not None for field, value in extracted_data.items()}
+    logger.info("Extracted data field presence: %s", presence)
+    logger.debug("Extracted data field values: %s", extracted_data)
 
 
 def _decode_image_bytes(data: bytes) -> np.ndarray:
@@ -315,6 +343,7 @@ async def run_pipeline(req: ProcessRequest) -> None:
             error_message=error_message,
         )
     else:
+        _log_extracted_data_privacy_safe(extracted_data)
         payload = build_webhook_payload(
             case_id=req.case_id,
             message_id=req.message_id,
