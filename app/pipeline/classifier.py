@@ -4,18 +4,25 @@
 [SUBTASKS] T3.1.1 load clip-vit-base-patch32 at startup (lifespan), CPU, no_grad
            T3.1.3 routing rule: printed label -> Branch A; else/low-confidence -> Branch B
            T3.1.4 classify(): CLIP inference on the vision_ready (CLAHE grayscale -> RGB) image
+           T3.1.5 log label + confidence per page (case_id via logging contextvar, T1.1.3)
 [SUMMARY]  Zero-shot document classification via CLIP (Contrastive Language-Image Pre-training).
            Loads the `openai/clip-vit-base-patch32` model once per worker at startup via
            HuggingFace Transformers on CPU. This module handles model loading and inference
            for routing documents into Branch A (PaddleOCR path) or Branch B (Vision API path).
            `classify()` runs CLIP zero-shot scoring against `CLIP_LABELS` on the
-           `vision_ready` grayscale image (converted to RGB — CLIP expects 3-channel input);
-           `route_branch()` turns its (label_index, confidence) output into a branch decision.
+           `vision_ready` grayscale image (converted to RGB — CLIP expects 3-channel input),
+           logging the winning label + confidence per call (case_id is picked up
+           automatically from the logging contextvar set up in T1.1.3 — not passed in
+           here); `route_branch()` turns its (label_index, confidence) output into a
+           branch decision.
 [PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.1
 [HISTORY]  2026-07-17  T3.1.1  load clip-vit-base-patch32 at startup
            2026-07-17  T3.1.3  add route_branch() routing rule + confidence threshold
            2026-07-17  T3.1.4  add classify() — CLIP inference on vision_ready image
+           2026-07-17  T3.1.5  log label + confidence per classify() call
 """
+
+import logging
 
 import cv2
 import numpy as np
@@ -23,6 +30,8 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 
 from app.config import CLIP_LABELS
+
+logger = logging.getLogger(__name__)
 
 # [T3.1.3] Per plan §4 T3.1.3 exactly — below this confidence, vision is the safe fallback
 # even when the top label happens to be the printed one.
@@ -87,6 +96,11 @@ def route_branch(top_label_index: int, confidence: float) -> str:
 # vision_ready (image_cleaner.CleanedImage) is single-channel CLAHE grayscale — CLIP was
 # trained on 3-channel images, so it's converted to RGB (channel-replicated, no color
 # information is invented) before going through the processor.
+# [T3.1.5] Logs the winning label + confidence at INFO on every call — this is a routing
+# decision, not a medical field value, so it isn't subject to CLAUDE.md's DEBUG-only rule
+# for patient data. case_id/message_id are picked up automatically by JsonFormatter
+# (app/utils/logging.py, T1.1.3) from the contextvar bound for the current pipeline run —
+# this function doesn't need a case_id parameter.
 def classify(vision_ready: np.ndarray) -> tuple[int, float]:
     """
     Run CLIP zero-shot classification on a vision_ready grayscale image.
@@ -103,4 +117,10 @@ def classify(vision_ready: np.ndarray) -> tuple[int, float]:
     probs = outputs.logits_per_image.softmax(dim=1)[0]
     top_label_index = int(torch.argmax(probs))
     confidence = float(probs[top_label_index])
+
+    logger.info(
+        "CLIP classification: label=%r confidence=%.4f",
+        CLIP_LABELS[top_label_index], confidence,
+    )
+
     return top_label_index, confidence

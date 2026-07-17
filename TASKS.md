@@ -27,8 +27,8 @@
 
 | Metric | Value |
 |---|---|
-| Tasks done | 4 / 17 |
-| Subtasks done | 17 / 68 |
+| Tasks done | 5 / 17 |
+| Subtasks done | 22 / 68 |
 | Current phase | 3 |
 | Active tasks | — |
 | Blocked tasks | — |
@@ -44,7 +44,7 @@
 | T1.3 | File downloader (Step 2a) | 1 | T1.1 | 3/3 | DONE | yes | 2026-07-16 | 2026-07-16 |
 | T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 5/5 | DONE | yes | 2026-07-16 | 2026-07-17 |
 | T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
-| T3.1 | CLIP router (Step 4a) | 3 | T2.2 | 0/5 | IN_PROGRESS | no | 2026-07-17 | — |
+| T3.1 | CLIP router (Step 4a) | 3 | T2.2 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T3.2 | PaddleOCR engine (Step 4b) | 3 | T3.1 | 0/4 | PENDING | no | — | — |
 | T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 0/6 | PENDING | no | — | — |
 | T4.2 | Laravel webhook return (Step 6) | 4 | T1.1 | 0/3 | PENDING | no | — | — |
@@ -83,4 +83,4 @@ Tasks inside the same wave can run **in parallel**. A wave may start as soon as 
 
 | Date | Task/Subtask | Note |
 |---|---|---|
-| — | — | (empty — add one row per blocker, AC failure, or decision) |
+| 2026-07-17 | T3.1 AC | Plan's exact AC references `printed_report.jpg`/`handwritten.jpg`/`medicine_box.jpg` fixtures owned by T5.1.1 (not yet built). Verified equivalent behavior with synthetic proxies instead (same precedent as T2.1/T2.2): real downloaded CLIP model, synthetic printed-text image → correctly scores the printed label at high confidence → routes to Branch A; random-noise image → non-printed label → Branch B; inference 0.29s (<1.5s AC); model-loads-once confirmed via lifespan test + startup log. Re-verify against real fixtures once T5.1.1 lands (T5.1.2 AC-test pass). |
