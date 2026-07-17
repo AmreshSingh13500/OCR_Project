@@ -69,7 +69,7 @@
 |---|---|---|---|---|
 | T3.1.1 | Load clip-vit-base-patch32 at startup (lifespan), CPU, no_grad | DONE | 2026-07-17 | `app/pipeline/classifier.py` — `load_clip()` called in `app/main.py` lifespan with `torch.no_grad()`. Model/processor stored in `app.state` and module-level globals via `set_clip()`. |
 | T3.1.2 | Candidate labels for 4 document classes (tunable in T7.2) | DONE | 2026-07-17 | `app/config.py` — `CLIP_LABELS` list, 4 exact strings per plan §4 T3.1.2. Index 0 is the printed-document label T3.1.3 will route to Branch A; order is load-bearing for that routing check. |
-| T3.1.3 | Routing rule: printed → Branch A; else Branch B; score <0.4 → Branch B fallback | PENDING | — | — |
+| T3.1.3 | Routing rule: printed → Branch A; else Branch B; score <0.4 → Branch B fallback | DONE | 2026-07-17 | `app/pipeline/classifier.py` — `route_branch()` + `_ROUTING_CONFIDENCE_THRESHOLD=0.4` + `BRANCH_A_PADDLEOCR`/`BRANCH_B_VISION` constants (reuse the frozen `processing_path` strings). Verified: label 0 + high confidence → Branch A; label 0 + confidence just under 0.4 → Branch B; confidence exactly 0.4 → Branch A (>=); labels 1-3 → Branch B regardless of confidence. |
 | T3.1.4 | Classify on `vision_ready` image (CLAHE grayscale → RGB) | PENDING | — | — |
 | T3.1.5 | Log label + confidence per page with case_id | PENDING | — | — |
 
