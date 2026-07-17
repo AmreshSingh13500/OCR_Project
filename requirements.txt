@@ -1,11 +1,15 @@
 # [MODULE]   requirements.txt
 # [TASK]     T1.1 — Project scaffold
+#            T5.1 — Test suite completion
 # [SUBTASKS] T1.1.1 pinned dependency list per IMPLEMENTATION_PLAN.md §4 (T1.1.1)
+#            T5.1.2 pytest-cov for coverage reporting (app/pipeline/ >= 80%)
 # [SUMMARY]  Pinned runtime + test dependencies for the OCR microservice. Versions
 #            are pinned exactly (no ranges) so the pipeline behaves identically across
 #            dev/staging/prod. CPU-only builds for torch/paddlepaddle per plan §1.
-# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.1.1
+# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.1.1; §5 → T5.1.2
 # [HISTORY]  2026-07-16  T1.1.1  initial pinned dependency list
+#            2026-07-17  T5.1.2  add pytest-cov (dev/test dependency only, additive —
+#                                 Rule 7 n/a)
 
 # --- Web framework / server ---
 fastapi==0.115.6
@@ -43,4 +47,5 @@ tenacity==9.0.0
 # --- Testing ---
 pytest==8.3.4
 pytest-asyncio==0.25.0
+pytest-cov==7.1.0
 respx==0.22.0

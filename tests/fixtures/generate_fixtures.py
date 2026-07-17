@@ -19,9 +19,13 @@
            this script is a local generation tool, not part of the runtime pipeline in
            app/, so it is not expected to run on the Linux deployment target) and fall
            back to PIL's built-in bitmap font if a path is missing, so it still runs
-           (with lower visual fidelity) on a machine without those fonts. Deterministic
-           — no randomness — so re-running reproduces the committed files byte-for-byte.
-           Run once from the project root: `.venv\\Scripts\\python.exe -m
+           (with lower visual fidelity) on a machine without those fonts. Content is
+           deterministic (handwritten.jpg's jitter/grain uses a fixed numpy seed) — the
+           3 PDF outputs are NOT byte-identical run-to-run, though: PyMuPDF's
+           `doc.save()` embeds a fresh random `/ID` in the trailer on every save
+           (standard PDF behavior, unrelated to anything this script controls); page
+           count/text layer/encryption state are unaffected and that's all any test
+           reads. Run once from the project root: `.venv\\Scripts\\python.exe -m
            tests.fixtures.generate_fixtures`.
 [PLAN]     IMPLEMENTATION_PLAN.md §4 → T5.1.1; §2 (tests/fixtures/ layout)
 [HISTORY]  2026-07-17  T5.1.1  initial fixture generator + committed output files
@@ -32,9 +36,13 @@ from pathlib import Path
 import cv2
 import fitz
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from tests.fixtures.ground_truth import HANDWRITTEN_LINES, LAB_REPORT_LINES
+
+# [T5.1.1] Fixed seed — handwritten.jpg's baseline jitter/paper-grain noise must be
+# reproducible (this module's [SUMMARY] promises byte-for-byte deterministic output).
+_HANDWRITING_RNG_SEED = 42
 
 FIXTURES_DIR = Path(__file__).parent
 
@@ -108,12 +116,43 @@ def make_printed_report_jpg(path: Path) -> Image.Image:
     return img
 
 
-# [T5.1.1] handwritten.jpg — cursive-font prescription note (Branch B candidate).
+# [T5.1.1] handwritten.jpg — cursive-font prescription note on ruled notebook paper
+# (Branch B candidate). A plain crisp rendering of a cursive font (the first attempt)
+# still reads as "printed... document" to the real CLIP model (0.42 printed vs. 0.58
+# handwritten only after these changes) — see TASKS.md §5, T3.1 AC note. Ruled lines,
+# a per-character baseline jitter, a slight overall page rotation, and paper-grain
+# noise + a light blur (simulating a phone photo rather than a flat scan) are what
+# pushes CLIP's zero-shot score to the handwritten label; verified against the real
+# model in test_classifier.py.
 def make_handwritten_jpg(path: Path) -> None:
-    img = _render_text_image(
-        HANDWRITTEN_LINES, _SEGOE_SCRIPT, 40, size=(1100, 1400),
-        bg=(250, 248, 238), fg=(20, 20, 90),
-    )
+    size = (1000, 1300)
+    bg = (247, 244, 230)
+    img = Image.new("RGB", size, bg)
+    draw = ImageDraw.Draw(img)
+
+    line_gap = 70
+    for y in range(120, size[1] - 60, line_gap):
+        draw.line([(40, y), (size[0] - 40, y)], fill=(190, 200, 215), width=2)
+    draw.line([(90, 40), (90, size[1] - 40)], fill=(220, 150, 150), width=2)  # margin rule
+
+    font = _load_font(_SEGOE_SCRIPT, 42)
+    rng = np.random.RandomState(_HANDWRITING_RNG_SEED)
+    y = 100
+    for line in HANDWRITTEN_LINES:
+        x = 110
+        baseline_wave = int(6 * np.sin(y * 0.09))
+        for ch in line:
+            dy = rng.randint(-4, 5)  # per-character jitter — an even baseline reads as "printed"
+            draw.text((x, y + baseline_wave + dy), ch, font=font, fill=(25, 25, 95))
+            x += draw.textlength(ch, font=font)
+        y += line_gap
+
+    img = img.rotate(-1.3, resample=Image.BICUBIC, expand=False, fillcolor=bg)
+
+    arr = np.array(img).astype(np.int16)
+    arr = np.clip(arr + rng.normal(0, 6, arr.shape), 0, 255).astype(np.uint8)
+    img = Image.fromarray(arr).filter(ImageFilter.GaussianBlur(radius=0.8))
+
     img.save(str(path), "JPEG", quality=90)
 
 

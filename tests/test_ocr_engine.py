@@ -1,0 +1,93 @@
+"""
+[MODULE]   tests/test_ocr_engine.py
+[TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
+           T5.1 — Test suite completion
+[SUBTASKS] T3.2.2 AC: printed_report.jpg -> non-empty text containing known fixture keywords
+           T3.2.3 AC: concurrent calls don't crash or interleave results
+           T3.2.4 AC: <20-char boundary cases for the vision-reroute rule
+           T5.1.2 backfilled committed pytest coverage for T3.2 using T5.1.1's real
+                  printed_report.jpg fixture (previously verified ad hoc, per SUBTASKS.md)
+[SUMMARY]  Loads the real PaddleOCR engine (cached locally from earlier manual
+           verification — no network call needed) and runs it against the real
+           printed_report.jpg fixture's ocr_ready (Step 3 cleaned) image, matching
+           plan §4 T3.2's AC. Also exercises extract_text_async()'s concurrency guard
+           with distinct concurrent inputs and should_reroute_to_vision()'s exact
+           character-count boundary.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T3.2.2, T3.2.3, T3.2.4; §5 → T5.1.2
+[HISTORY]  2026-07-17  T5.1.2  initial committed test file using the real
+                                printed_report.jpg fixture (backfills T3.2's ad hoc
+                                verification)
+"""
+
+import asyncio
+from pathlib import Path
+
+import cv2
+import pytest
+
+from app.pipeline.image_cleaner import clean_image
+from app.pipeline.ocr_engine import (
+    extract_text,
+    extract_text_async,
+    load_paddleocr,
+    set_paddleocr,
+    should_reroute_to_vision,
+)
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _paddleocr_loaded():
+    """Loads the real PaddleOCR engine once for this test module (T3.2.1) — cached locally."""
+    set_paddleocr(load_paddleocr())
+
+
+def _ocr_ready(name: str):
+    bgr = cv2.imread(str(FIXTURES_DIR / name), cv2.IMREAD_COLOR)
+    return clean_image(bgr).ocr_ready
+
+
+def test_extract_text_printed_report_contains_known_keywords():
+    """[T3.2.2] AC: printed_report.jpg -> non-empty text containing known fixture keywords."""
+    text = extract_text(_ocr_ready("printed_report.jpg"))
+
+    assert text != ""
+    assert "LAB REPORT" in text
+    assert "John Smith" in text
+
+
+@pytest.mark.asyncio
+async def test_extract_text_async_concurrent_calls_do_not_interleave():
+    """[T3.2.3] AC: concurrent calls through the asyncio.Lock guard don't crash or mix up results between requests."""
+    printed = _ocr_ready("printed_report.jpg")
+    medicine_box_gray = cv2.cvtColor(
+        cv2.imread(str(FIXTURES_DIR / "medicine_box.jpg"), cv2.IMREAD_COLOR), cv2.COLOR_BGR2GRAY
+    )
+
+    results = await asyncio.gather(
+        extract_text_async(printed),
+        extract_text_async(medicine_box_gray),
+        extract_text_async(printed),
+        extract_text_async(medicine_box_gray),
+    )
+
+    assert "LAB REPORT" in results[0]
+    assert "PARACETAMOL" in results[1] or "ParaCure" in results[1]
+    assert "LAB REPORT" in results[2]
+    assert "PARACETAMOL" in results[3] or "ParaCure" in results[3]
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("", True),
+        ("x", True),
+        ("x" * 19, True),
+        ("x" * 20, False),  # exactly at the threshold -> trusted, no reroute
+        ("a fully readable line of extracted text", False),
+    ],
+)
+def test_should_reroute_to_vision_boundary(text, expected):
+    """[T3.2.4] AC: <20 characters reroutes to vision; >=20 is trusted as-is."""
+    assert should_reroute_to_vision(text) == expected
