@@ -5,13 +5,16 @@
 # [SUBTASKS] T2.1.4 document/install poppler-utils system dependency
 #            T6.1.1 install system deps, create service user, venv + pip install
 #            T6.1.2 firewalld (allow 22 + 443 only) + certbot port-80 renewal hooks
+#            T6.1.3 warm CLIP + PaddleOCR weights into the ocrsvc cache
 # [SUMMARY]  AlmaLinux 9 server bootstrap / provisioning script for the OCR microservice.
 #            Installs every system dependency (python3.12, poppler-utils, nginx, the OpenCV
 #            runtime libs paddleocr transitively needs, and certbot), creates the
 #            unprivileged `ocrsvc` service user, and builds the project virtualenv from the
 #            pinned requirements.txt. Then configures firewalld to permit only SSH (22) and
 #            HTTPS (443), and installs certbot renewal hooks that open port 80 transiently
-#            only during HTTP-01 renewal (T6.1.2). Idempotent — safe to re-run. Designed to
+#            only during HTTP-01 renewal (T6.1.2). Finally warms the CLIP + PaddleOCR model
+#            weights into the ocrsvc cache via scripts/warmup_models.py (T6.1.3) so the
+#            first request after deploy isn't slow. Idempotent — safe to re-run. Designed to
 #            run unattended to completion on a fresh AlmaLinux 9 VM (T6.1 AC).
 #            DEPLOY-TARGET NOTE: IMPLEMENTATION_PLAN.md's PHASE 6 heading still reads
 #            "Ubuntu Dedicated Server" (apt / UFW / libgl1), but the recorded project
@@ -19,7 +22,7 @@
 #            target is AlmaLinux 9, so this script uses dnf (not apt), firewalld (not UFW,
 #            handled in T6.1.2), python3.12 (appstream), and mesa-libGL/glib2 (not libgl1).
 #            No app/ code changes result — application code is OS-portable.
-# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.4, T6.1.1, T6.1.2
+# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.4, T6.1.1, T6.1.2, T6.1.3
 # [HISTORY]  2026-07-17  T2.1.4  initial poppler-utils install step (apt-get)
 #            2026-07-18  T6.1.1  full AlmaLinux 9 provisioning: migrate apt-get->dnf,
 #                                 add python3.12/nginx/OpenCV-runtime-libs/certbot, create
@@ -31,6 +34,8 @@
 #                                 (TASKS.md §5 #4); certbot HTTP-01 renewal hooks that open
 #                                 port 80 transiently then close it; enable
 #                                 certbot-renew.timer
+#            2026-07-18  T6.1.3  run scripts/warmup_models.py as ocrsvc to pre-cache the
+#                                 CLIP + PaddleOCR weights at the end of provisioning
 set -euo pipefail
 
 # --- Provisioning parameters -------------------------------------------------
@@ -153,3 +158,16 @@ chmod +x /etc/letsencrypt/renewal-hooks/pre/open-port-80.sh \
 systemctl enable --now certbot-renew.timer 2>/dev/null || true
 
 echo "==> T6.1.2 firewall + renewal hooks configured: 22/tcp + 443/tcp open, port 80 transient."
+
+# [T6.1.3] Pre-download CLIP + PaddleOCR weights into the ocrsvc cache so the first real
+# request after deploy doesn't pay the multi-hundred-MB download mid-pipeline. Run as
+# ${SERVICE_USER} with HOME=${APP_DIR} (so the HuggingFace/PaddleOCR caches land under the
+# service user's home) and cwd=${REPO_ROOT} (so `-m scripts.warmup_models` resolves). The
+# warmup script sets placeholder env vars itself, so it runs fine before /etc/ocr-service/env
+# exists (that file is T6.2's deliverable).
+echo "==> Warming up model weights (CLIP + PaddleOCR)"
+runuser -u "${SERVICE_USER}" -- env HOME="${APP_DIR}" \
+    bash -c "cd '${REPO_ROOT}' && exec '${VENV_DIR}/bin/python' -m scripts.warmup_models"
+
+echo "==> T6.1.3 model warmup complete."
+echo "==> Server provisioning finished."
