@@ -7,6 +7,7 @@
 [SUBTASKS] T1.1.1 create repo layout per plan §2 (FastAPI app factory + lifespan skeleton)
            T1.1.3 configure JSON logging at startup
            T1.2.3 mount the app.api.routes router (POST /api/v1/process)
+           T1.2.4 mount the app.api.routes router (GET /health) — same include_router() call
            T3.1.1 load CLIP model at startup (lifespan)
            T3.2.1 load PaddleOCR engine at startup (lifespan)
 [SUMMARY]  FastAPI application entrypoint, started via `uvicorn app.main:app`. Defines
@@ -25,6 +26,8 @@
                                 conflict on Windows dev boxes — order unchanged, just
                                 documented so it's never accidentally reordered
            2026-07-17  T1.2.3  mount app.api.routes' router via app.include_router()
+           2026-07-17  T1.2.4  no change here — GET /health was added to the same
+                                app.api.routes router already mounted by T1.2.3
 """
 
 import logging
@@ -75,5 +78,5 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="OCR Microservice", lifespan=lifespan)
 
-# [T1.2.3] Mounts POST /api/v1/process (and GET /health, T1.2.4) under the root app.
+# [T1.2.3] [T1.2.4] Mounts POST /api/v1/process and GET /health under the root app.
 app.include_router(router)

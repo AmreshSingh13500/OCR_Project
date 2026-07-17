@@ -2,15 +2,19 @@
 [MODULE]   tests/test_routes.py
 [TASK]     T1.2 — Auth & API endpoints
 [SUBTASKS] T1.2.3 POST /api/v1/process — validate -> BackgroundTask -> 202 immediately
+           T1.2.4 GET /health — 200 with clip_loaded/paddle_loaded flags, unauthenticated
 [SUMMARY]  TestClient-level tests for app/api/routes.py, mounted on a minimal FastAPI app
            built here (not app.main:app) so these tests don't trigger main.py's lifespan
            (real CLIP/PaddleOCR model loads) just to exercise HTTP routing/validation/
            auth. `run_pipeline` is monkeypatched at the routes module level so a 202
            response never actually runs the pipeline; the fake records the ProcessRequest
            it was scheduled with so the "enqueued as a BackgroundTask" behavior itself is
-           verifiable, not just the HTTP response shape.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3
+           verifiable, not just the HTTP response shape. /health tests set app.state
+           directly (no lifespan run) to exercise both the "not loaded yet" and "loaded"
+           flag states, and confirm no auth header is required.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4
 [HISTORY]  2026-07-17  T1.2.3  initial 202/401/422 endpoint tests
+           2026-07-17  T1.2.4  add /health tests (model-loaded flags false/true, no auth)
 """
 
 import pytest
@@ -77,3 +81,27 @@ def test_malformed_body_returns_422(client):
     )
     assert response.status_code == 422
     assert client.app.state.scheduled == []
+
+
+def test_health_no_auth_reports_models_not_loaded():
+    """[T1.2.4] AC: /health is unauthenticated and returns 200 with clip_loaded/paddle_loaded flags."""
+    test_app = FastAPI()
+    test_app.include_router(routes.router)
+    with TestClient(test_app) as c:
+        response = c.get("/health")  # deliberately no Authorization header
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "clip_loaded": False, "paddle_loaded": False}
+
+
+def test_health_reports_models_loaded_when_state_set():
+    """[T1.2.4] AC: /health reflects app.state.clip_model/paddle_ocr once lifespan has set them."""
+    test_app = FastAPI()
+    test_app.include_router(routes.router)
+    test_app.state.clip_model = object()
+    test_app.state.paddle_ocr = object()
+    with TestClient(test_app) as c:
+        response = c.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["clip_loaded"] is True
+    assert body["paddle_loaded"] is True
