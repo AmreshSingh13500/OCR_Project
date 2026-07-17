@@ -1,11 +1,13 @@
 """
 [MODULE]   app/pipeline/orchestrator.py
 [TASK]     T4.3 — Pipeline orchestrator
-[SUBTASKS] T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
+[SUBTASKS] T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
                   wins any mixed-page case
            T4.3.3 error mapping table — 7 exception -> error_message strings exactly
                   per plan
+           T4.3.4 top-level try/except: every accepted request -> exactly one webhook
+                  call
 [SUMMARY]  Wires the full pipeline together for one accepted request: download (Step 2a)
            -> native/scanned PDF detection (Step 2b) or direct-image passthrough ->
            OpenCV cleaning (Step 3) -> CLIP routing + PaddleOCR/vision extraction
@@ -19,22 +21,26 @@
            and every page's image is sent together (extract_from_text/extract_from_images
            are mutually exclusive — no single call can mix raw text and images); only
            when every page's OCR output was trusted does processing_path stay
-           'paddleocr'. `map_exception_to_error_message()` (T4.3.3) holds the frozen
+           'paddleocr'. `_run_extraction()` (T4.3.1) does Steps 2-5 and returns/raises;
+           `run_pipeline()` (T4.3.4) wraps it in a top-level try/except so exactly one
+           webhook call happens either way — the success branch builds a 'success'
+           payload from `_run_extraction()`'s result, the except branch maps whatever
+           was raised via `map_exception_to_error_message()` (T4.3.3, the frozen
            7-exception -> error_message lookup from plan §4 T4.3.3's table, keyed by
-           exact exception type (never isinstance) since those exception classes were
-           deliberately kept flat with no shared hierarchy for exactly this reason (see
-           T1.3.3's note); anything not in the table falls through to "Internal
-           processing error" with the full traceback logged. `schemas.py` (T1.2.2)
-           doesn't exist yet, so `ProcessRequest` is defined here as the first formal
-           definition of the PRD §4.1 request shape (same precedent as T4.1.1's
+           exact exception type — never isinstance — since those exception classes were
+           deliberately kept flat with no shared hierarchy for exactly this reason, see
+           T1.3.3's note) into an error payload with `processing_path=None` and
+           `extracted_data=None`; anything not in the table falls through to "Internal
+           processing error" with the full traceback logged. `send_webhook()` itself
+           never raises to its caller (T4.2.2/T4.2.3's CRITICAL-log contract), so
+           calling it exactly once after the try/except/else has resolved is sufficient
+           to guarantee the "exactly one webhook per accepted request" AC — there is no
+           code path that calls it zero or twice. `schemas.py` (T1.2.2) doesn't exist
+           yet, so `ProcessRequest` is defined here as the first formal definition of
+           the PRD §4.1 request shape (same precedent as T4.1.1's
            EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's build_webhook_payload) — T1.2.2 must
-           mirror it when built. These three subtasks don't yet add up to a fault-
-           tolerant pipeline: map_exception_to_error_message() is a pure mapping
-           function, not wired into a try/except anywhere, so an exception raised in
-           run_pipeline's chain still propagates uncaught today — the top-level
-           try/except guaranteeing exactly one webhook per accepted request (T4.3.4) is
-           what will call this mapping and is a separate subtask not yet applied here.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3
+           mirror it when built.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4
 [HISTORY]  2026-07-17  T4.3.1  initial run_pipeline() wiring Steps 2->6 — new module, no
                                 schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a)
@@ -52,6 +58,15 @@
                                 here), reproduced verbatim, not edited — additive/
                                 contract-safe; no schemas.py/routes.py/webhook_client.py
                                 changes
+           2026-07-17  T4.3.4  extracted Steps 2-5 out of run_pipeline() into
+                                _run_extraction() (T4.3.1's tag moves with it, no
+                                behavior change) so run_pipeline() itself becomes the
+                                top-level try/except that maps any raised exception via
+                                map_exception_to_error_message() and guarantees exactly
+                                one send_webhook() call per request; no schemas.py/
+                                routes.py/webhook_client.py/error-string changes
+                                (Rule 7 gate n/a) — reuses build_webhook_payload()'s
+                                existing contract fields unchanged
 """
 
 import logging
@@ -184,16 +199,14 @@ async def _extract_from_pages(images: list[np.ndarray], case_id: str) -> tuple[d
     return extract_from_text("\n".join(ocr_texts)), BRANCH_A_PADDLEOCR
 
 
-# [T4.3.1] Wires Steps 2 through 6 for one accepted request: download -> detect content
-# kind -> native-PDF text / scanned-PDF pages / direct-image passthrough -> clean ->
-# classify -> OCR-or-vision -> LLM -> webhook. A native PDF's text layer goes straight to
-# Step 5 (no cleaning/classification needed for a real text layer); a directly-attached
-# image (not inside a PDF) skips straight to Step 3, same as a scanned PDF's rasterized
-# pages. Error mapping (T4.3.3) and the top-level try/except that guarantees exactly one
-# webhook per request (T4.3.4) are separate subtasks — not yet applied here.
-async def run_pipeline(req: ProcessRequest) -> None:
-    bind_case_context(req.case_id, req.message_id)
-
+# [T4.3.1] Steps 2 through 5 for one accepted request: download -> detect content kind
+# -> native-PDF text / scanned-PDF pages / direct-image passthrough -> clean -> classify
+# -> OCR-or-vision -> LLM. A native PDF's text layer goes straight to Step 5 (no
+# cleaning/classification needed for a real text layer); a directly-attached image (not
+# inside a PDF) skips straight to Step 3, same as a scanned PDF's rasterized pages. Step 6
+# (webhook) deliberately isn't built here — run_pipeline() owns it so it can guarantee
+# exactly one webhook call regardless of whether this function raises (T4.3.4).
+async def _run_extraction(req: ProcessRequest) -> tuple[dict, str]:
     buffer = await download_file(req.file_url)
     data = buffer.read()
     kind = detect_content_kind(data)
@@ -202,24 +215,49 @@ async def run_pipeline(req: ProcessRequest) -> None:
         doc = open_pdf(data)
         native_result = extract_native_text(doc)
         if native_result is not None:
-            extracted_data = extract_from_text(native_result.text)
-            processing_path = "native_pdf"
-        else:
-            scanned = convert_scanned_pdf(data, doc.page_count)
-            images = [_pil_to_bgr(page) for page in scanned.images]
-            extracted_data, processing_path = await _extract_from_pages(images, req.case_id)
-    elif kind == ContentKind.IMAGE:
+            return extract_from_text(native_result.text), "native_pdf"
+        scanned = convert_scanned_pdf(data, doc.page_count)
+        images = [_pil_to_bgr(page) for page in scanned.images]
+        return await _extract_from_pages(images, req.case_id)
+    if kind == ContentKind.IMAGE:
         image = _decode_image_bytes(data)
-        extracted_data, processing_path = await _extract_from_pages([image], req.case_id)
-    else:
-        raise UnsupportedFileError("Detected content is neither a PDF nor an image")
+        return await _extract_from_pages([image], req.case_id)
+    raise UnsupportedFileError("Detected content is neither a PDF nor an image")
 
-    payload = build_webhook_payload(
-        case_id=req.case_id,
-        message_id=req.message_id,
-        status="success",
-        processing_path=processing_path,
-        extracted_data=extracted_data,
-        error_message=None,
-    )
+
+# [T4.3.4] Top-level try/except per plan §4 T4.3.4: every accepted request produces
+# exactly one webhook call, success or error, never zero and never two. Any exception
+# raised anywhere in _run_extraction's chain (typed pipeline exceptions or an
+# unanticipated bug) is mapped via T4.3.3's map_exception_to_error_message() into an
+# error payload instead of propagating — build_webhook_payload()/send_webhook() are
+# called exactly once, after the try/except has already decided success vs. error, so
+# there's no path that calls send_webhook zero or twice. send_webhook() itself never
+# raises to its caller either way (T4.2.2/T4.2.3's CRITICAL-log contract), so this is
+# the only place a webhook failure could otherwise go unnoticed.
+async def run_pipeline(req: ProcessRequest) -> None:
+    bind_case_context(req.case_id, req.message_id)
+
+    try:
+        extracted_data, processing_path = await _run_extraction(req)
+    except Exception as exc:
+        error_message = map_exception_to_error_message(exc)
+        logger.warning("Pipeline request failed: error_message=%r", error_message)
+        payload = build_webhook_payload(
+            case_id=req.case_id,
+            message_id=req.message_id,
+            status="error",
+            processing_path=None,
+            extracted_data=None,
+            error_message=error_message,
+        )
+    else:
+        payload = build_webhook_payload(
+            case_id=req.case_id,
+            message_id=req.message_id,
+            status="success",
+            processing_path=processing_path,
+            extracted_data=extracted_data,
+            error_message=None,
+        )
+
     await send_webhook(payload)
