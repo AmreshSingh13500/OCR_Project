@@ -115,7 +115,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T5.1.1 | Assemble 7 test fixtures — synthetic/anonymized only, no real patient data | PENDING | — | — |
+| T5.1.1 | Assemble 7 test fixtures — synthetic/anonymized only, no real patient data | DONE | 2026-07-17 | `tests/fixtures/generate_fixtures.py` (new, one-shot generator) + `tests/fixtures/ground_truth.py` (fabricated document text + expected ExtractedData per fixture) + the 7 committed binary files: native.pdf (real PyMuPDF text layer, 199 chars > NATIVE_PDF_MIN_CHARS), scanned.pdf (4 image-only pages, no text layer, JPEG-embedded to keep the file ~65KB), printed_report.jpg/handwritten.jpg (Arial vs. cursive Segoe Script system fonts), medicine_box.jpg (drawn box + blister pack, not a photo), password.pdf (AES-256 encrypted, `needs_pass=True` verified), blurry.jpg (printed_report.jpg + heavy Gaussian blur, for the all-fields-null/unreadable scenario). All content fabricated (John Smith/Maria Garcia/etc.) — no real patient data. Verified: native.pdf text extraction (199 chars), password.pdf needs_pass=1, scanned.pdf 4 pages/0 text chars — all via real PyMuPDF in `.venv`. Generator script hardcodes local Windows font paths (dev-only tooling, not part of the app/ runtime pipeline) with a PIL-default-font fallback if absent. |
 | T5.1.2 | Coverage ≥80% on app/pipeline/; all Phase 1–4 AC tests green | PENDING | — | — |
 | T5.1.3 | Concurrency test: 8 parallel requests → 8 webhooks, no data bleed | PENDING | — | — |
 | T5.1.4 | Accuracy validation harness (field-level accuracy report script) | PENDING | — | — |
