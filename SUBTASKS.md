@@ -97,7 +97,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T4.2.1 | `webhook_client.py` — async POST with Bearer key, WebhookPayload body | PENDING | — | — |
+| T4.2.1 | `webhook_client.py` — async POST with Bearer key, WebhookPayload body | DONE | 2026-07-17 | `app/pipeline/webhook_client.py` — `build_webhook_payload()` (exact WebhookPayload key set, first formal definition since schemas.py/T1.2.2 doesn't exist yet, same precedent as T4.1.1) + `send_webhook()` (bare async httpx POST, Bearer `LARAVEL_WEBHOOK_KEY` header, no retry/error handling yet — T4.2.2/T4.2.3). Also added `tests/conftest.py` (new, minimal — sets the 4 required env vars so `Settings()` can instantiate under pytest; not the full plan-§2 conftest.py with sample-file/mock fixtures, which is T5.1.1's deliverable and will extend this file per Rule 3). Verified via committed respx test `tests/test_webhook_client.py`: payload key-set exact match, POST hits `LARAVEL_WEBHOOK_URL` with correct Bearer header and JSON body — both tests green in `.venv`. |
 | T4.2.2 | Retries on 5xx/connection only (3×, exp backoff); 4xx = no retry, CRITICAL log | PENDING | — | — |
 | T4.2.3 | Retries exhausted → CRITICAL log with full replayable payload JSON | PENDING | — | — |
 
