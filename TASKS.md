@@ -27,8 +27,8 @@
 
 | Metric | Value |
 |---|---|
-| Tasks done | 11 / 17 |
-| Subtasks done | 49 / 68 |
+| Tasks done | 12 / 17 |
+| Subtasks done | 53 / 68 |
 | Current phase | 4 |
 | Active tasks | — |
 | Blocked tasks | — |
@@ -49,7 +49,7 @@
 | T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 6/6 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.2 | Laravel webhook return (Step 6) | 4 | T1.1 | 3/3 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.3 | Pipeline orchestrator | 4 | T1.3, T2.1, T2.2, T3.1, T3.2, T4.1, T4.2 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
-| T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 0/4 | PENDING | no | — | — |
+| T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T5.2 | Security hardening (app level) | 5 | T1.2, T1.3 | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T6.1 | Server provisioning script | 6 | — | 0/3 | PENDING | no | — | — |
 | T6.2 | Process & proxy configuration | 6 | T6.1 | 0/3 | PENDING | no | — | — |
@@ -92,3 +92,4 @@ Tasks inside the same wave can run **in parallel**. A wave may start as soon as 
 | 2026-07-17 | T5.1 (dependency note) | TASKS.md's own Depends-On column lists "T1.1–T4.3 (all)" for T5.1, which literally includes T1.2 (Auth & API endpoints — still 0/5 PENDING: no `auth.py`/`schemas.py`/`routes.py` exist yet). Proceeding with T5.1 anyway per explicit user direction, since T5.1.2's actual AC text is narrower than the shorthand dependency entry — "coverage ≥80% on `app/pipeline/`" and "all Phase 1–4 AC tests green" for code that exists — and every T5.1 subtask (fixtures, pipeline coverage, orchestrator-level concurrency test, accuracy harness) operates on `app/pipeline/`/`run_pipeline()` directly, none of it touches the HTTP layer T1.2 owns. T1.2's own AC (202 response, 401/422 handling) remains unverified until T1.2 is implemented — do not treat T5.1's rollup to DONE as covering it. `test_auth.py` from the plan's §2 layout is intentionally not created in T5.1.2 for the same reason. **Resolved 2026-07-17:** T1.2 is now implemented and its own AC independently verified (see the T1.2 AC note above) — `tests/test_auth.py`, `tests/test_schemas.py`, and `tests/test_routes.py` now cover exactly the gap this note flagged. T5.1's coverage numbers/rollup are unaffected (still valid for what they covered at the time); no action needed on T5.1 itself. |
 | 2026-07-17 | T3.2.4 / dev env (poppler) | `pdftoppm` (poppler-utils) is still not installed on this Windows dev box, confirmed again while building T5.1.1's `scanned.pdf` fixture — `pdf2image.convert_from_bytes()` cannot be exercised for real here. `pdf_handler.py`'s scanned-PDF branch (T2.1.3) continues to be verified via mocking on this machine; `scanned.pdf` is real and committed, but any test that calls `convert_scanned_pdf()` against it for real needs to be skipped on this box (`pytest.mark.skipif` on `shutil.which("pdftoppm")`) and re-run once poppler-utils is available (T6.1's Linux server, or a local poppler install). |
 | 2026-07-17 | T5.2 AC | Plan's exact SSRF AC text uses `http://169.254.169.254/...` and `http://localhost/...`, but T1.2.5 (already implemented, Phase 1) requires `file_url` to be `https://` — those literal example URLs would already be rejected as non-https before ever reaching T5.2.4's SSRF guard. Verified the equivalent `https://` scheme instead (same precedent as T3.1/T4.1/T1.2's AC notes above): `https://169.254.169.254/...`, `https://127.0.0.1/...`, and `https://localhost/...` all correctly rejected with 400 through the real endpoint (`tests/test_security_hardening.py`, `ssrf_client` fixture) — the IP-safety property under test (reject private/loopback/link-local ranges after resolution) is identical regardless of URL scheme, so this is a faithful verification of the AC's intent. Also verified: no bearer tokens in logs (T5.2.1, checked at DEBUG — INFO is subsumed) and no patient field values at INFO (T5.2.2, values gated to DEBUG-only). All 4 subtasks DONE, T5.2 rolled up to DONE. |
+| 2026-07-18 | T5.1 (tracker correction) | Found this Task Board row still read `0/4 PENDING` despite all 4 T5.1 subtasks already being `DONE` in SUBTASKS.md since 2026-07-17, with real commits for each (`e5fbe7e` T5.1.1, `7f40fb6` T5.1.2, `bc7efe0` T5.1.3, `7a5738e` T5.1.4 — the last commit message literally reads "roll up T5.1 to DONE"). The roll-up never actually reached this file — a bookkeeping gap, not missing work. Re-verified the AC directly before correcting: `pytest --cov=app.pipeline` → 96% coverage (417 stmts, 17 missed — matches T5.1.2's note), 132 passed, 2 skipped (poppler/live-OpenAI-key gates, same documented precedent as T5.1.2/T4.1 AC notes, not failures). Corrected this row to `4/4 DONE yes 2026-07-17 2026-07-17` and the §2 Progress Summary counters (11→12 tasks, 49→53 subtasks) to match. No code or test changes — SUBTASKS.md was already accurate. |
