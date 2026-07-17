@@ -67,7 +67,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T3.1.1 | Load clip-vit-base-patch32 at startup (lifespan), CPU, no_grad | PENDING | — | — |
+| T3.1.1 | Load clip-vit-base-patch32 at startup (lifespan), CPU, no_grad | DONE | 2026-07-17 | `app/pipeline/classifier.py` — `load_clip()` called in `app/main.py` lifespan with `torch.no_grad()`. Model/processor stored in `app.state` and module-level globals via `set_clip()`. |
 | T3.1.2 | Candidate labels for 4 document classes (tunable in T7.2) | PENDING | — | — |
 | T3.1.3 | Routing rule: printed → Branch A; else Branch B; score <0.4 → Branch B fallback | PENDING | — | — |
 | T3.1.4 | Classify on `vision_ready` image (CLAHE grayscale → RGB) | PENDING | — | — |
