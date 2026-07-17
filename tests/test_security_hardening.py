@@ -3,6 +3,7 @@
 [TASK]     T5.2 — Security hardening (app level)
 [SUBTASKS] T5.2.1 constant-time token compare re-verification; no token in logs
            T5.2.2 privacy logging: field values DEBUG-only, presence booleans at INFO
+           T5.2.3 request body size limit — reject bodies over MAX_REQUEST_BODY_BYTES
 [SUMMARY]  Cross-cutting security tests for Phase 5's app-level hardening pass. Each
            T5.2 subtask gets its own section here rather than being folded into the
            module it touches, since these are properties of the whole request path
@@ -16,10 +17,14 @@
            field presence booleans at INFO and the actual values only at DEBUG, and that
            webhook_client.py's send_webhook() CRITICAL failure logs never carry a raw
            field value (only the DEBUG-level full-payload log does).
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T5.2.1, T5.2.2
+           T5.2.3: confirms a request body over MAX_REQUEST_BODY_BYTES gets 413 through
+           the real endpoint, and that enforce_body_size_limit()'s actual-body-length
+           fallback still catches an oversized body even if Content-Length understates it.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T5.2.1, T5.2.2, T5.2.3
 [HISTORY]  2026-07-17  T5.2.1  initial no-token-in-logs regression tests
            2026-07-17  T5.2.2  add privacy-logging tests for orchestrator.py and
                                 webhook_client.py
+           2026-07-17  T5.2.3  add request-body-size-limit tests
 """
 
 import inspect
@@ -28,13 +33,14 @@ import logging
 
 import pytest
 import respx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from httpx import Response
 
 from app.api import routes
+from app.api.routes import enforce_body_size_limit
 from app.auth import require_api_key
-from app.config import settings
+from app.config import MAX_REQUEST_BODY_BYTES, settings
 from app.pipeline.orchestrator import _log_extracted_data_privacy_safe
 from app.pipeline.webhook_client import _redact_extracted_data, build_webhook_payload, send_webhook
 
@@ -178,3 +184,74 @@ async def test_send_webhook_critical_log_redacted_debug_log_has_full_payload(cap
 
     assert any(_SENSITIVE_VALUE in r.getMessage() for r in debug_records)
     assert any(json.dumps(payload) in r.getMessage() for r in debug_records)
+
+
+# --- T5.2.3 — request body size limit (FastAPI level) ---
+
+
+def test_oversized_request_body_returns_413(client):
+    """[T5.2.3] AC: a request body over MAX_REQUEST_BODY_BYTES is rejected with 413."""
+    oversized_blob = "x" * (MAX_REQUEST_BODY_BYTES + 1)
+    response = client.post(
+        "/api/v1/process",
+        headers=AUTH_HEADERS,
+        json={
+            "case_id": "case-1",
+            "message_id": "msg-1",
+            "file_url": "https://x/doc.pdf",
+            "file_name": oversized_blob,
+        },
+    )
+    assert response.status_code == 413
+    assert client.app.state.scheduled == []
+
+
+def test_normal_sized_request_body_is_not_rejected(client):
+    """[T5.2.3] AC: a normal small request body is unaffected by the size guard."""
+    response = client.post(
+        "/api/v1/process",
+        headers=AUTH_HEADERS,
+        json={"case_id": "case-1", "message_id": "msg-1", "file_url": "https://x/doc.pdf"},
+    )
+    assert response.status_code == 202
+
+
+class _FakeRequestWithLyingContentLength:
+    """Simulates a request whose Content-Length header understates the real body size."""
+
+    def __init__(self, real_body: bytes, claimed_content_length: int):
+        self.headers = {"content-length": str(claimed_content_length)}
+        self._real_body = real_body
+
+    async def body(self) -> bytes:
+        return self._real_body
+
+
+@pytest.mark.asyncio
+async def test_enforce_body_size_limit_catches_understated_content_length():
+    """[T5.2.3] AC: the actual buffered body length is still checked even when
+    Content-Length lies about being small — a malicious client can't bypass the cap by
+    sending a false header."""
+    fake_request = _FakeRequestWithLyingContentLength(
+        real_body=b"x" * (MAX_REQUEST_BODY_BYTES + 1), claimed_content_length=10
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await enforce_body_size_limit(fake_request)
+    assert exc_info.value.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_enforce_body_size_limit_rejects_via_content_length_fast_path():
+    """[T5.2.3] AC: an oversized Content-Length header is rejected before the body is
+    even read (fast path)."""
+
+    class _NeverReadBody:
+        def __init__(self):
+            self.headers = {"content-length": str(MAX_REQUEST_BODY_BYTES + 1)}
+
+        async def body(self):
+            raise AssertionError("body() should not be called when Content-Length already exceeds the limit")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await enforce_body_size_limit(_NeverReadBody())
+    assert exc_info.value.status_code == 413

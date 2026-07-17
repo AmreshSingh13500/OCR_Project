@@ -1,9 +1,11 @@
 """
 [MODULE]   app/api/routes.py
 [TASK]     T1.2 — Auth & API endpoints
+           T5.2 — Security hardening (app level)
 [SUBTASKS] T1.2.3 POST /api/v1/process — validate -> BackgroundTask -> 202 immediately
            T1.2.4 GET /health — 200 with clip_loaded/paddle_loaded flags, unauthenticated
            T1.2.5 validate file_url scheme is https; reject invalid URLs with 400
+           T5.2.3 enforce_body_size_limit — reject request bodies over MAX_REQUEST_BODY_BYTES
 [SUMMARY]  HTTP surface of the microservice. POST /api/v1/process is the Laravel-facing
            ingestion endpoint (Bearer-authenticated via T1.2.1's require_api_key
            dependency; the request body is validated against schemas.ProcessRequest,
@@ -20,12 +22,23 @@
            (monitoring probes don't carry the bearer token) and reports whether the
            CLIP/PaddleOCR models have finished loading, read from app.state — populated
            once at startup by main.py's lifespan (T3.1.1 CLIP, T3.2.1 PaddleOCR), never
-           re-checked per request.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4, T1.2.5
+           re-checked per request. `enforce_body_size_limit` (T5.2.3) is a FastAPI
+           dependency that rejects a request body over MAX_REQUEST_BODY_BYTES with 413 —
+           app-level defense in depth ahead of Nginx's client_max_body_size (T6.2.2, not
+           yet built). It checks Content-Length first for a fast rejection, then falls
+           back to the actual buffered body length (Starlette caches `request.body()`,
+           so this doesn't cause a second read) so a request with a missing or
+           understated Content-Length can't bypass the cap either.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4, T1.2.5, T5.2.3
 [HISTORY]  2026-07-17  T1.2.3  initial POST /api/v1/process — validate, enqueue
                                 run_pipeline as BackgroundTask, return 202
            2026-07-17  T1.2.4  add GET /health
            2026-07-17  T1.2.5  add _is_valid_https_url() + 400 check in process_document()
+           2026-07-17  T5.2.3  add enforce_body_size_limit() dependency + wire it into
+                                POST /api/v1/process alongside require_api_key; new
+                                MAX_REQUEST_BODY_BYTES constant added to config.py (Rule
+                                7 gate n/a — new dependency only, ProcessRequest/
+                                WebhookPayload/error strings untouched)
 """
 
 from urllib.parse import urlparse
@@ -33,6 +46,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
 from app.auth import require_api_key
+from app.config import MAX_REQUEST_BODY_BYTES
 from app.pipeline.orchestrator import run_pipeline
 from app.schemas import ProcessRequest
 
@@ -47,13 +61,33 @@ def _is_valid_https_url(file_url: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
+# [T5.2.3] Content-Length is checked first for a fast rejection without reading the body
+# at all; the actual buffered length is the robust fallback for a request with a
+# missing/understated Content-Length header, since a malicious client can lie about it.
+# `await request.body()` is safe to call here even though FastAPI will also parse the
+# body into ProcessRequest afterwards — Starlette caches the raw bytes on the Request
+# object the first time they're read, so this doesn't trigger a second stream read.
+async def enforce_body_size_limit(request: Request) -> None:
+    content_length = request.headers.get("content-length")
+    if content_length is not None and int(content_length) > MAX_REQUEST_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body exceeds 1 MB limit")
+    body = await request.body()
+    if len(body) > MAX_REQUEST_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body exceeds 1 MB limit")
+
+
 # [T1.2.3] Auth (T1.2.1) is enforced via the require_api_key dependency before this body
 # ever runs; a malformed body is rejected with 422 by FastAPI's own ProcessRequest
 # validation before this function is even called. [T1.2.5] file_url is then checked for
-# an https scheme and a real host, 400 if not. The pipeline itself is handed to
-# BackgroundTasks (Starlette runs it after the response is sent) so this handler returns
-# 202 immediately regardless of how long download/OCR/LLM extraction takes.
-@router.post("/api/v1/process", status_code=202, dependencies=[Depends(require_api_key)])
+# an https scheme and a real host, 400 if not. [T5.2.3] enforce_body_size_limit rejects
+# an oversized body with 413 before any of the above run. The pipeline itself is handed
+# to BackgroundTasks (Starlette runs it after the response is sent) so this handler
+# returns 202 immediately regardless of how long download/OCR/LLM extraction takes.
+@router.post(
+    "/api/v1/process",
+    status_code=202,
+    dependencies=[Depends(require_api_key), Depends(enforce_body_size_limit)],
+)
 async def process_document(req: ProcessRequest, background_tasks: BackgroundTasks) -> dict:
     if not _is_valid_https_url(req.file_url):
         raise HTTPException(status_code=400, detail="file_url must be a valid https URL")

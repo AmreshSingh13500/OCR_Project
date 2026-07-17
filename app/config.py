@@ -3,9 +3,11 @@
 [TASK]     T1.1 — Project scaffold
            T3.1 — CLIP router (Step 4a)
            T3.2 — PaddleOCR engine (Step 4b)
+           T5.2 — Security hardening (app level)
 [SUBTASKS] T1.1.2 pydantic-settings Settings; fail fast on missing required env vars
            T3.1.2 CLIP_LABELS candidate labels for zero-shot document classification
            T3.1.3 / T3.2.4 BRANCH_A_PADDLEOCR / BRANCH_B_VISION frozen branch constants
+           T5.2.3 MAX_REQUEST_BODY_BYTES — FastAPI-level request body size cap
 [SUMMARY]  Central configuration for the OCR microservice. `Settings` (pydantic-settings
            BaseSettings) loads every env var from IMPLEMENTATION_PLAN.md §3 and is
            instantiated at import time, so a missing required var raises immediately and
@@ -21,12 +23,18 @@
            (CODING_RULES.md Rule 7) and live here — not in classifier.py or ocr_engine.py —
            specifically so neither module needs to import the other's heavy ML dependency
            (torch vs paddlepaddle) just to reference a branch name; see T3.2.4's history
-           note for the concrete bug this avoids.
-[PLAN]     IMPLEMENTATION_PLAN.md §3 → T1.1.2; §4 → T3.1.2, T3.1.3, T3.2.4
+           note for the concrete bug this avoids. `MAX_REQUEST_BODY_BYTES` (T5.2.3) is the
+           FastAPI-level request body size cap enforced by routes.py's
+           `enforce_body_size_limit` dependency — a fixed constant (not env-driven) since
+           it must stay in lockstep with Nginx's `client_max_body_size 1m` (T6.2.2).
+[PLAN]     IMPLEMENTATION_PLAN.md §3 → T1.1.2; §4 → T3.1.2, T3.1.3, T3.2.4, T5.2.3
 [HISTORY]  2026-07-16  T1.1.2  initial Settings class + fixed pipeline constants
            2026-07-17  T3.1.2  add CLIP_LABELS constant
            2026-07-17  T3.2.4  move BRANCH_A_PADDLEOCR/BRANCH_B_VISION here from
                                 classifier.py (see classifier.py [HISTORY] for why)
+           2026-07-17  T5.2.3  add MAX_REQUEST_BODY_BYTES (1 MB) — fixed constant, not
+                                env-driven, mirrors Nginx's future client_max_body_size
+                                1m (deploy/nginx.conf, T6.2.2, not yet built)
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -60,6 +68,13 @@ MAX_PDF_PAGES_CONVERT = 5       # T2.1.3 hard cap on pages rasterized from a PDF
 MAX_PDF_PAGES_OCR = 3           # T2.1.2 / T2.1.3 pages actually sent through OCR/LLM
 PDF2IMAGE_DPI = 200             # T2.1.3 rasterization DPI
 OPENAI_MAX_RETRIES = 3          # T4.1.4 tenacity stop_after_attempt
+
+# [T5.2.3] FastAPI-level request body size cap (defense in depth ahead of Nginx's
+# client_max_body_size 1m, T6.2.2 — not yet built). The JSON body Laravel sends to
+# POST /api/v1/process is inherently small (case_id/message_id/file_url/etc., never the
+# file content itself, which is downloaded separately in Step 2a) — 1 MB is a generous
+# ceiling against abuse/oversized payloads, matching the plan's exact Nginx figure.
+MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024  # 1 MB
 
 # [T3.1.2] Candidate labels CLIP scores each document image against (zero-shot).
 # Index 0 is the sole "printed" label (Branch A / paddleocr); indices 1-3 are the
