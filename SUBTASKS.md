@@ -124,7 +124,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T5.2.1 | Verify constant-time token compare; no tokens in logs | PENDING | — | — |
+| T5.2.1 | Verify constant-time token compare; no tokens in logs | DONE | 2026-07-17 | `app/auth.py` — re-verified `require_api_key()` (T1.2.1) still uses `secrets.compare_digest` and has no logging statement at all, so neither the correct `OCR_API_KEY` nor a caller-supplied token can leak. New `tests/test_security_hardening.py` (4 tests): wrong/missing/valid-token requests through the real mounted `/api/v1/process` endpoint, captured at DEBUG level, assert the real token and the wrong attempted token never appear in any log record; a source-inspection test locks in `compare_digest` usage as a regression guard. Full suite green in `.venv` (109 passed, 2 skipped, no regressions). |
 | T5.2.2 | Privacy logging: field values DEBUG-only; presence booleans at INFO | PENDING | — | — |
 | T5.2.3 | Request body size limit (Nginx 1 MB + FastAPI level) | PENDING | — | — |
 | T5.2.4 | SSRF guard: host allowlist env + reject private/loopback IPs post-DNS | PENDING | — | — |
