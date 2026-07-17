@@ -8,6 +8,7 @@
                   per plan
            T4.3.4 top-level try/except: every accepted request -> exactly one webhook
                   call
+           T4.3.5 per-request timing log: total ms + per-step ms
 [SUMMARY]  Wires the full pipeline together for one accepted request: download (Step 2a)
            -> native/scanned PDF detection (Step 2b) or direct-image passthrough ->
            OpenCV cleaning (Step 3) -> CLIP routing + PaddleOCR/vision extraction
@@ -35,12 +36,19 @@
            never raises to its caller (T4.2.2/T4.2.3's CRITICAL-log contract), so
            calling it exactly once after the try/except/else has resolved is sufficient
            to guarantee the "exactly one webhook per accepted request" AC — there is no
-           code path that calls it zero or twice. `schemas.py` (T1.2.2) doesn't exist
-           yet, so `ProcessRequest` is defined here as the first formal definition of
-           the PRD §4.1 request shape (same precedent as T4.1.1's
-           EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's build_webhook_payload) — T1.2.2 must
-           mirror it when built.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4
+           code path that calls it zero or twice. `_StepTimings`/`_timed()` (T4.3.5)
+           accumulate elapsed milliseconds per named step (`step2a_download`,
+           `step2b_pdf_detect`, `step3_clean`, `step4a_classify`, `step4b_ocr`,
+           `step5_llm`, `step6_webhook`) across the whole call — a multi-page request's
+           Steps 3-4 run once per page, so their samples are summed rather than
+           overwritten — and `run_pipeline()` logs one line with the total wall-clock ms
+           plus that per-step breakdown at the very end, on both the success and error
+           paths (a `_timed()` block records its elapsed time on the way out even if the
+           block raised). `schemas.py` (T1.2.2) doesn't exist yet, so `ProcessRequest`
+           is defined here as the first formal definition of the PRD §4.1 request shape
+           (same precedent as T4.1.1's EXTRACTED_DATA_JSON_SCHEMA and T4.2.1's
+           build_webhook_payload) — T1.2.2 must mirror it when built.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4, T4.3.5
 [HISTORY]  2026-07-17  T4.3.1  initial run_pipeline() wiring Steps 2->6 — new module, no
                                 schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a)
@@ -67,9 +75,19 @@
                                 routes.py/webhook_client.py/error-string changes
                                 (Rule 7 gate n/a) — reuses build_webhook_payload()'s
                                 existing contract fields unchanged
+           2026-07-17  T4.3.5  add _StepTimings/_timed() and thread `timings` through
+                                _run_extraction()/_extract_from_pages(); run_pipeline()
+                                logs one "Pipeline request timing" line per request
+                                (total_ms + per-step ms) on both the success and error
+                                paths; no schemas.py/routes.py/webhook_client.py/
+                                error-string changes (Rule 7 gate n/a) — logging-only
+                                addition, no change to any existing return value/payload
+                                shape
 """
 
 import logging
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
 
@@ -143,6 +161,34 @@ def map_exception_to_error_message(exc: Exception) -> str:
     return _DEFAULT_ERROR_MESSAGE
 
 
+# [T4.3.5] Accumulates elapsed milliseconds per named step across one run_pipeline()
+# call. A dict (not a fixed dataclass) because a multi-page request runs Steps 3-4
+# once per page — record() sums repeat samples into the same key instead of overwriting,
+# so the final log line reports total time spent in each step, not just the last page's.
+class _StepTimings:
+    def __init__(self) -> None:
+        self._ms: dict[str, float] = {}
+
+    def record(self, step: str, elapsed_ms: float) -> None:
+        self._ms[step] = self._ms.get(step, 0.0) + elapsed_ms
+
+    def as_dict(self) -> dict[str, float]:
+        return {step: round(ms, 1) for step, ms in self._ms.items()}
+
+
+# [T4.3.5] Times one named step and records it into `timings`, even if the timed block
+# raises — a failed request still gets partial per-step timing up to the point of
+# failure, which is exactly what's useful for diagnosing where a slow/failing request
+# spent its time.
+@contextmanager
+def _timed(timings: _StepTimings, step: str):
+    start = time.monotonic()
+    try:
+        yield
+    finally:
+        timings.record(step, (time.monotonic() - start) * 1000)
+
+
 # [T4.3.1] First formal definition of the PRD §4.1 ProcessRequest shape — schemas.py
 # (T1.2.2) doesn't exist yet. file_type/file_name/source_channel are carried for contract
 # completeness but unused by run_pipeline itself: content kind is always re-derived from
@@ -167,21 +213,28 @@ def _pil_to_bgr(image: Image.Image) -> np.ndarray:
 
 # [T4.3.1] Steps 3+4 for one or more page images: cleans each, classifies it, and
 # extracts via PaddleOCR or vision per page. A page routed to Branch A whose OCR yield
-# is too low (T3.2.4) is rerouted to vision.
-async def _extract_from_pages(images: list[np.ndarray], case_id: str) -> tuple[dict, str]:
+# is too low (T3.2.4) is rerouted to vision. [T4.3.5] Per-step timing is accumulated
+# across all pages into the same 'step3_clean'/'step4a_classify'/'step4b_ocr' keys —
+# a 3-page request's Step 3 time is the sum of cleaning all 3 pages, not just one.
+async def _extract_from_pages(
+    images: list[np.ndarray], case_id: str, timings: _StepTimings
+) -> tuple[dict, str]:
     ocr_texts: list[str] = []
     vision_images: list[np.ndarray] = []
     needs_vision = False
 
     for image in images:
-        cleaned = clean_image(image, case_id=case_id)
+        with _timed(timings, "step3_clean"):
+            cleaned = clean_image(image, case_id=case_id)
         vision_images.append(cleaned.vision_ready)
 
-        label_index, confidence = classify(cleaned.vision_ready)
+        with _timed(timings, "step4a_classify"):
+            label_index, confidence = classify(cleaned.vision_ready)
         branch = route_branch(label_index, confidence)
 
         if branch == BRANCH_A_PADDLEOCR:
-            text = await extract_text_async(cleaned.ocr_ready)
+            with _timed(timings, "step4b_ocr"):
+                text = await extract_text_async(cleaned.ocr_ready)
             if not should_reroute_to_vision(text):
                 ocr_texts.append(text)
                 continue
@@ -194,9 +247,10 @@ async def _extract_from_pages(images: list[np.ndarray], case_id: str) -> tuple[d
     # mixed-page document is never reported as 'paddleocr'. All pages' vision_ready
     # images are sent together in that case, since extract_from_text/extract_from_images
     # are mutually exclusive (no single call can mix raw text and images).
-    if needs_vision:
-        return extract_from_images(vision_images), BRANCH_B_VISION
-    return extract_from_text("\n".join(ocr_texts)), BRANCH_A_PADDLEOCR
+    with _timed(timings, "step5_llm"):
+        if needs_vision:
+            return extract_from_images(vision_images), BRANCH_B_VISION
+        return extract_from_text("\n".join(ocr_texts)), BRANCH_A_PADDLEOCR
 
 
 # [T4.3.1] Steps 2 through 5 for one accepted request: download -> detect content kind
@@ -206,22 +260,29 @@ async def _extract_from_pages(images: list[np.ndarray], case_id: str) -> tuple[d
 # inside a PDF) skips straight to Step 3, same as a scanned PDF's rasterized pages. Step 6
 # (webhook) deliberately isn't built here — run_pipeline() owns it so it can guarantee
 # exactly one webhook call regardless of whether this function raises (T4.3.4).
-async def _run_extraction(req: ProcessRequest) -> tuple[dict, str]:
-    buffer = await download_file(req.file_url)
+# [T4.3.5] `timings` is threaded through (not a module global) so concurrent requests
+# never share or clobber each other's per-step measurements.
+async def _run_extraction(req: ProcessRequest, timings: _StepTimings) -> tuple[dict, str]:
+    with _timed(timings, "step2a_download"):
+        buffer = await download_file(req.file_url)
     data = buffer.read()
     kind = detect_content_kind(data)
 
     if kind == ContentKind.PDF:
-        doc = open_pdf(data)
-        native_result = extract_native_text(doc)
+        with _timed(timings, "step2b_pdf_detect"):
+            doc = open_pdf(data)
+            native_result = extract_native_text(doc)
         if native_result is not None:
-            return extract_from_text(native_result.text), "native_pdf"
-        scanned = convert_scanned_pdf(data, doc.page_count)
-        images = [_pil_to_bgr(page) for page in scanned.images]
-        return await _extract_from_pages(images, req.case_id)
+            with _timed(timings, "step5_llm"):
+                extracted_data = extract_from_text(native_result.text)
+            return extracted_data, "native_pdf"
+        with _timed(timings, "step2b_pdf_detect"):
+            scanned = convert_scanned_pdf(data, doc.page_count)
+            images = [_pil_to_bgr(page) for page in scanned.images]
+        return await _extract_from_pages(images, req.case_id, timings)
     if kind == ContentKind.IMAGE:
         image = _decode_image_bytes(data)
-        return await _extract_from_pages([image], req.case_id)
+        return await _extract_from_pages([image], req.case_id, timings)
     raise UnsupportedFileError("Detected content is neither a PDF nor an image")
 
 
@@ -234,11 +295,17 @@ async def _run_extraction(req: ProcessRequest) -> tuple[dict, str]:
 # there's no path that calls send_webhook zero or twice. send_webhook() itself never
 # raises to its caller either way (T4.2.2/T4.2.3's CRITICAL-log contract), so this is
 # the only place a webhook failure could otherwise go unnoticed.
+# [T4.3.5] Logs one timing line per request: total wall-clock ms for the whole call plus
+# the per-step ms breakdown from `timings` — recorded even on the error path, since
+# _timed() records elapsed time on the way out regardless of whether the timed block
+# raised, so a failed request's log line still shows where the time went up to failure.
 async def run_pipeline(req: ProcessRequest) -> None:
     bind_case_context(req.case_id, req.message_id)
+    request_start = time.monotonic()
+    timings = _StepTimings()
 
     try:
-        extracted_data, processing_path = await _run_extraction(req)
+        extracted_data, processing_path = await _run_extraction(req, timings)
     except Exception as exc:
         error_message = map_exception_to_error_message(exc)
         logger.warning("Pipeline request failed: error_message=%r", error_message)
@@ -260,4 +327,8 @@ async def run_pipeline(req: ProcessRequest) -> None:
             error_message=None,
         )
 
-    await send_webhook(payload)
+    with _timed(timings, "step6_webhook"):
+        await send_webhook(payload)
+
+    total_ms = round((time.monotonic() - request_start) * 1000, 1)
+    logger.info("Pipeline request timing: total_ms=%s steps_ms=%s", total_ms, timings.as_dict())

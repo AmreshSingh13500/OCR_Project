@@ -8,6 +8,7 @@
                   per plan
            T4.3.4 top-level try/except: every accepted request -> exactly one webhook
                   call
+           T4.3.5 per-request timing log: total ms + per-step ms
 [SUMMARY]  Unit tests for orchestrator.py's run_pipeline() wiring. All of run_pipeline's
            collaborators (download, PDF handling, CLIP, PaddleOCR, OpenAI, webhook) are
            monkeypatched at the orchestrator module level so this exercises only the
@@ -26,7 +27,11 @@
            during extraction (PasswordProtectedError) and an unmapped one (RuntimeError)
            each produce exactly one webhook call with status='error',
            processing_path=None, extracted_data=None, and the correct error_message.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4
+           Verifies T4.3.5's _StepTimings/_timed() helpers directly (accumulation across
+           repeated steps, elapsed time recorded even when the timed block raises) plus
+           run_pipeline() logging exactly one "Pipeline request timing" line with
+           total_ms and a per-step breakdown, on both the success and error paths.
+[PLAN]     IMPLEMENTATION_PLAN.md §4 -> T4.3.1, T4.3.2, T4.3.3, T4.3.4, T4.3.5
 [HISTORY]  2026-07-17  T4.3.1  initial happy-path wiring tests (native_pdf, paddleocr,
                                 vision_api)
            2026-07-17  T4.3.2  add mixed-page tests: vision-routed page mixed with a
@@ -39,6 +44,8 @@
                                 exactly one error webhook with the frozen message;
                                 unmapped exception -> exactly one error webhook with
                                 'Internal processing error' + traceback logged
+           2026-07-17  T4.3.5  add _StepTimings/_timed() unit tests plus run_pipeline()
+                                timing-log tests on both the success and error paths
 """
 
 import io
@@ -340,6 +347,75 @@ async def test_run_pipeline_unmapped_exception_sends_exactly_one_internal_error_
     assert payload["status"] == "error"
     assert payload["error_message"] == "Internal processing error"
     assert any(record.exc_info for record in caplog.records)
+
+
+def test_step_timings_accumulates_repeated_steps():
+    """[T4.3.5] AC: recording the same step multiple times sums the elapsed ms (a multi-page request's Step 3/4 time), not overwrites it."""
+    timings = orchestrator._StepTimings()
+    timings.record("step3_clean", 10.0)
+    timings.record("step3_clean", 15.0)
+    timings.record("step4a_classify", 5.0)
+
+    assert timings.as_dict() == {"step3_clean": 25.0, "step4a_classify": 5.0}
+
+
+def test_timed_records_elapsed_even_when_block_raises():
+    """[T4.3.5] AC: _timed() records the step's elapsed time even if the timed block raises, so a failed request still gets partial per-step timing."""
+    timings = orchestrator._StepTimings()
+
+    with pytest.raises(ValueError):
+        with orchestrator._timed(timings, "step2a_download"):
+            raise ValueError("boom")
+
+    assert "step2a_download" in timings.as_dict()
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_logs_total_and_per_step_timing_on_success(monkeypatch, caplog):
+    """[T4.3.5] AC: a successful request logs exactly one "Pipeline request timing" line with total_ms and a per-step ms breakdown."""
+    monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"%PDF-fake")))
+    monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.PDF)
+    monkeypatch.setattr(orchestrator, "open_pdf", lambda data: _FakeDoc(page_count=1))
+    monkeypatch.setattr(
+        orchestrator, "extract_native_text",
+        lambda doc: _NativeResult(text="a long native pdf text layer" * 10),
+    )
+    monkeypatch.setattr(
+        orchestrator, "extract_from_text",
+        lambda text: {"patient_name": None, "doctor_name": None, "diagnosis": None,
+                       "procedure": None, "cost": None, "medicines": None},
+    )
+    monkeypatch.setattr(orchestrator, "send_webhook", _record_webhook([]))
+
+    with caplog.at_level(logging.INFO):
+        await run_pipeline(ProcessRequest(case_id="case-10", message_id="msg-10", file_url="https://x/doc.pdf"))
+
+    timing_records = [r for r in caplog.records if r.getMessage().startswith("Pipeline request timing")]
+    assert len(timing_records) == 1
+    message = timing_records[0].getMessage()
+    assert "total_ms=" in message
+    assert "step2a_download" in message
+    assert "step5_llm" in message
+    assert "step6_webhook" in message
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_logs_timing_on_error_path_too(monkeypatch, caplog):
+    """[T4.3.5] AC: a failed request still logs the timing line alongside its error webhook — partial per-step ms up to the failure."""
+    monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"%PDF-fake")))
+    monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.PDF)
+    monkeypatch.setattr(orchestrator, "open_pdf", _raise(PasswordProtectedError("Password protected document")))
+    monkeypatch.setattr(orchestrator, "send_webhook", _record_webhook([]))
+
+    with caplog.at_level(logging.INFO):
+        await run_pipeline(ProcessRequest(case_id="case-11", message_id="msg-11", file_url="https://x/locked.pdf"))
+
+    timing_records = [r for r in caplog.records if r.getMessage().startswith("Pipeline request timing")]
+    assert len(timing_records) == 1
+    message = timing_records[0].getMessage()
+    assert "total_ms=" in message
+    assert "step2a_download" in message  # completed before the failure
+    assert "step6_webhook" in message  # error webhook still timed
 
 
 @pytest.mark.parametrize(
