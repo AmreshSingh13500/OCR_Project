@@ -1,25 +1,33 @@
 """
 [MODULE]   tests/test_routes.py
 [TASK]     T1.2 — Auth & API endpoints
+           T5.2 — Security hardening (app level)
 [SUBTASKS] T1.2.3 POST /api/v1/process — validate -> BackgroundTask -> 202 immediately
            T1.2.4 GET /health — 200 with clip_loaded/paddle_loaded flags, unauthenticated
            T1.2.5 validate file_url scheme is https; reject invalid URLs with 400
+           T5.2.4 bypass the SSRF guard in the shared `client` fixture (own tests live
+                  in tests/test_security_hardening.py)
 [SUMMARY]  TestClient-level tests for app/api/routes.py, mounted on a minimal FastAPI app
            built here (not app.main:app) so these tests don't trigger main.py's lifespan
            (real CLIP/PaddleOCR model loads) just to exercise HTTP routing/validation/
            auth. `run_pipeline` is monkeypatched at the routes module level so a 202
            response never actually runs the pipeline; the fake records the ProcessRequest
            it was scheduled with so the "enqueued as a BackgroundTask" behavior itself is
-           verifiable, not just the HTTP response shape. /health tests set app.state
+           verifiable, not just the HTTP response shape. `_is_safe_file_url` (T5.2.4's
+           SSRF guard) is also bypassed in the same fixture — these tests aren't about
+           the SSRF guard, and bypassing it keeps "https://x/doc.pdf" working as a plain
+           placeholder host without a real DNS lookup. /health tests set app.state
            directly (no lifespan run) to exercise both the "not loaded yet" and "loaded"
            flag states, and confirm no auth header is required. The file_url tests
            confirm a non-https scheme and a host-less URL both yield 400 (distinct from
            the 422 a structurally malformed body gets) and that run_pipeline is never
            scheduled in either case.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4, T1.2.5
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.3, T1.2.4, T1.2.5, T5.2.4
 [HISTORY]  2026-07-17  T1.2.3  initial 202/401/422 endpoint tests
            2026-07-17  T1.2.4  add /health tests (model-loaded flags false/true, no auth)
            2026-07-17  T1.2.5  add invalid-file_url -> 400 tests
+           2026-07-17  T5.2.4  bypass the new SSRF guard in the `client` fixture so
+                                existing tests don't depend on real DNS resolution
 """
 
 import pytest
@@ -32,10 +40,19 @@ from app.config import settings
 AUTH_HEADERS = {"Authorization": f"Bearer {settings.OCR_API_KEY}"}
 
 
+async def _bypass_ssrf_check(file_url: str) -> bool:
+    return True
+
+
 @pytest.fixture
 def client(monkeypatch):
     scheduled = []
     monkeypatch.setattr(routes, "run_pipeline", lambda req: scheduled.append(req))
+    # [T5.2.4] These tests exercise auth/validation/routing, not the SSRF guard (which
+    # has its own dedicated tests in tests/test_security_hardening.py) — bypassing it
+    # here keeps "https://x/doc.pdf" working as a plain placeholder host without a real
+    # (and here, sandbox-unfriendly) DNS lookup.
+    monkeypatch.setattr(routes, "_is_safe_file_url", _bypass_ssrf_check)
     test_app = FastAPI()
     test_app.include_router(routes.router)
     test_app.state.scheduled = scheduled

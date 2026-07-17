@@ -122,6 +122,7 @@ OCR_Project/
 | `DOWNLOAD_TIMEOUT_S` | httpx timeout for file fetch | `30` |
 | `LOG_LEVEL` | logging | `INFO` |
 | `DEBUG_SAVE_IMAGES` | save intermediate images to /tmp for debugging | `false` |
+| `ALLOWED_FILE_HOSTS` | optional SSRF-guard allowlist for `file_url` hosts (T5.2.4) | `*.amazonaws.com,media.ultramsg.com` |
 
 Constants in `config.py` (not env): `NATIVE_PDF_MIN_CHARS = 100`, `MAX_PDF_PAGES_CONVERT = 5`, `MAX_PDF_PAGES_OCR = 3`, `PDF2IMAGE_DPI = 200`, `CLIP_LABELS`, `OPENAI_MAX_RETRIES = 3`.
 

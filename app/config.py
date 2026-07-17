@@ -8,6 +8,7 @@
            T3.1.2 CLIP_LABELS candidate labels for zero-shot document classification
            T3.1.3 / T3.2.4 BRANCH_A_PADDLEOCR / BRANCH_B_VISION frozen branch constants
            T5.2.3 MAX_REQUEST_BODY_BYTES — FastAPI-level request body size cap
+           T5.2.4 ALLOWED_FILE_HOSTS — optional file_url host allowlist (SSRF guard)
 [SUMMARY]  Central configuration for the OCR microservice. `Settings` (pydantic-settings
            BaseSettings) loads every env var from IMPLEMENTATION_PLAN.md §3 and is
            instantiated at import time, so a missing required var raises immediately and
@@ -27,7 +28,11 @@
            FastAPI-level request body size cap enforced by routes.py's
            `enforce_body_size_limit` dependency — a fixed constant (not env-driven) since
            it must stay in lockstep with Nginx's `client_max_body_size 1m` (T6.2.2).
-[PLAN]     IMPLEMENTATION_PLAN.md §3 → T1.1.2; §4 → T3.1.2, T3.1.3, T3.2.4, T5.2.3
+           `ALLOWED_FILE_HOSTS` (T5.2.4) is an optional comma-separated `file_url` host
+           allowlist for routes.py's SSRF guard; `None`/unset means "no allowlist
+           restriction" — the private/loopback IP check still always applies regardless
+           of whether this is configured.
+[PLAN]     IMPLEMENTATION_PLAN.md §3 → T1.1.2, T5.2.4; §4 → T3.1.2, T3.1.3, T3.2.4, T5.2.3
 [HISTORY]  2026-07-16  T1.1.2  initial Settings class + fixed pipeline constants
            2026-07-17  T3.1.2  add CLIP_LABELS constant
            2026-07-17  T3.2.4  move BRANCH_A_PADDLEOCR/BRANCH_B_VISION here from
@@ -35,7 +40,14 @@
            2026-07-17  T5.2.3  add MAX_REQUEST_BODY_BYTES (1 MB) — fixed constant, not
                                 env-driven, mirrors Nginx's future client_max_body_size
                                 1m (deploy/nginx.conf, T6.2.2, not yet built)
+           2026-07-17  T5.2.4  add ALLOWED_FILE_HOSTS (optional, default None/unset) —
+                                new env var per plan §4 T5.2.4's own wording; additive
+                                (Rule 7: new optional env var, no rename), also added to
+                                IMPLEMENTATION_PLAN.md §3's env var table and
+                                .env.example for consistency
 """
+
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -58,6 +70,11 @@ class Settings(BaseSettings):
     DOWNLOAD_TIMEOUT_S: int = 30
     LOG_LEVEL: str = "INFO"
     DEBUG_SAVE_IMAGES: bool = False
+
+    # [T5.2.4] Optional SSRF-guard allowlist — comma-separated file_url hosts (e.g.
+    # "*.amazonaws.com,media.ultramsg.com"). Unset/empty means no allowlist restriction;
+    # the private/loopback IP check in routes.py always applies either way.
+    ALLOWED_FILE_HOSTS: Optional[str] = None
 
 
 settings = Settings()
