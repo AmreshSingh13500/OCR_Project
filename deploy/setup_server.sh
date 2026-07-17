@@ -4,19 +4,22 @@
 #            T6.1 — Server provisioning script (Phase 6)
 # [SUBTASKS] T2.1.4 document/install poppler-utils system dependency
 #            T6.1.1 install system deps, create service user, venv + pip install
+#            T6.1.2 firewalld (allow 22 + 443 only) + certbot port-80 renewal hooks
 # [SUMMARY]  AlmaLinux 9 server bootstrap / provisioning script for the OCR microservice.
 #            Installs every system dependency (python3.12, poppler-utils, nginx, the OpenCV
 #            runtime libs paddleocr transitively needs, and certbot), creates the
 #            unprivileged `ocrsvc` service user, and builds the project virtualenv from the
-#            pinned requirements.txt. Idempotent — safe to re-run. Designed to run
-#            unattended to completion on a fresh AlmaLinux 9 VM (T6.1 AC).
+#            pinned requirements.txt. Then configures firewalld to permit only SSH (22) and
+#            HTTPS (443), and installs certbot renewal hooks that open port 80 transiently
+#            only during HTTP-01 renewal (T6.1.2). Idempotent — safe to re-run. Designed to
+#            run unattended to completion on a fresh AlmaLinux 9 VM (T6.1 AC).
 #            DEPLOY-TARGET NOTE: IMPLEMENTATION_PLAN.md's PHASE 6 heading still reads
 #            "Ubuntu Dedicated Server" (apt / UFW / libgl1), but the recorded project
 #            decision (TASKS.md §5, 2026-07-17 T6.1/T6.2) supersedes that wording — the
 #            target is AlmaLinux 9, so this script uses dnf (not apt), firewalld (not UFW,
 #            handled in T6.1.2), python3.12 (appstream), and mesa-libGL/glib2 (not libgl1).
 #            No app/ code changes result — application code is OS-portable.
-# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.4, T6.1.1
+# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T2.1.4, T6.1.1, T6.1.2
 # [HISTORY]  2026-07-17  T2.1.4  initial poppler-utils install step (apt-get)
 #            2026-07-18  T6.1.1  full AlmaLinux 9 provisioning: migrate apt-get->dnf,
 #                                 add python3.12/nginx/OpenCV-runtime-libs/certbot, create
@@ -24,6 +27,10 @@
 #                                 -r requirements.txt; set SELinux httpd_can_network_connect
 #                                 for the T6.2 nginx->gunicorn proxy (TASKS.md §5 AlmaLinux
 #                                 decision, consequences #1-#5)
+#            2026-07-18  T6.1.2  firewalld (allow 22+443 only, default-deny) instead of UFW
+#                                 (TASKS.md §5 #4); certbot HTTP-01 renewal hooks that open
+#                                 port 80 transiently then close it; enable
+#                                 certbot-renew.timer
 set -euo pipefail
 
 # --- Provisioning parameters -------------------------------------------------
@@ -100,3 +107,49 @@ runuser -u "${SERVICE_USER}" -- "${VENV_DIR}/bin/python" -m pip install --upgrad
 runuser -u "${SERVICE_USER}" -- "${VENV_DIR}/bin/pip" install -r "${REPO_ROOT}/requirements.txt"
 
 echo "==> T6.1.1 provisioning complete: system deps installed, ${SERVICE_USER} created, venv ready."
+
+# [T6.1.2] Firewall — firewalld (AlmaLinux default; UFW is Debian/Ubuntu, TASKS.md §5 #4).
+# Default-deny incoming (the public zone rejects anything not explicitly opened) with
+# exactly 22/tcp + 443/tcp allowed, matching the PRD "only 22 and 443" rule. Port 80 is
+# deliberately NOT permanently open — it's opened transiently only during certbot HTTP-01
+# renewal by the hooks below. Ports (not the ssh/https service aliases) are used so
+# `firewall-cmd --list-ports` reads exactly "22/tcp 443/tcp", matching the AC literally.
+echo "==> Configuring firewalld (allow 22 + 443 only)"
+systemctl enable --now firewalld
+firewall-cmd --permanent --zone=public --add-port=22/tcp
+firewall-cmd --permanent --zone=public --add-port=443/tcp
+# Drop the services AlmaLinux pre-seeds into the public zone so nothing beyond the two
+# ports above stays reachable (idempotent — ignore if a service is already absent).
+for svc in ssh cockpit dhcpv6-client; do
+    firewall-cmd --permanent --zone=public --remove-service="${svc}" 2>/dev/null || true
+done
+firewall-cmd --reload
+
+# [T6.1.2] certbot renewal hooks. The cert is issued once with the --standalone
+# authenticator (nginx listens on 443 only, so certbot can bind port 80 during renewal
+# without a conflict). Because 80 stays firewalled the rest of the time, these global
+# hooks open it just for the renewal window and close it again afterwards — the transient
+# HTTP-01 window called for in plan T6.1.2. The firewall changes are runtime-only (no
+# --permanent) so a reload/reboot can never leave port 80 stuck open.
+echo "==> Installing certbot port-80 renewal hooks"
+install -d /etc/letsencrypt/renewal-hooks/pre /etc/letsencrypt/renewal-hooks/post
+cat > /etc/letsencrypt/renewal-hooks/pre/open-port-80.sh <<'HOOK'
+#!/bin/bash
+# [T6.1.2] Open port 80 transiently for certbot HTTP-01 standalone renewal.
+set -euo pipefail
+firewall-cmd --add-port=80/tcp
+HOOK
+cat > /etc/letsencrypt/renewal-hooks/post/close-port-80.sh <<'HOOK'
+#!/bin/bash
+# [T6.1.2] Close port 80 again after certbot renewal completes.
+set -euo pipefail
+firewall-cmd --remove-port=80/tcp || true
+HOOK
+chmod +x /etc/letsencrypt/renewal-hooks/pre/open-port-80.sh \
+         /etc/letsencrypt/renewal-hooks/post/close-port-80.sh
+
+# [T6.1.2] Enable certbot's auto-renewal timer (shipped by the EPEL certbot package) so
+# the hooks above actually fire on schedule. Ignored if the timer unit isn't present.
+systemctl enable --now certbot-renew.timer 2>/dev/null || true
+
+echo "==> T6.1.2 firewall + renewal hooks configured: 22/tcp + 443/tcp open, port 80 transient."
