@@ -141,7 +141,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T6.2.1 | systemd unit: gunicorn 4 uvicorn workers, Restart=always, EnvironmentFile | PENDING | — | — |
+| T6.2.1 | systemd unit: gunicorn 4 uvicorn workers, Restart=always, EnvironmentFile | DONE | 2026-07-18 | `deploy/ocr-service.service` (new). Runs `/opt/ocr-service/.venv/bin/gunicorn app.main:app` with `--workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 127.0.0.1:8000 --timeout 300` (plan T6.2.1 verbatim), as `ocrsvc`/`ocrsvc` with `WorkingDirectory=/opt/ocr-service` — the exact user/venv/APP_DIR provisioned in `setup_server.sh` (T6.1.1). `EnvironmentFile=/etc/ocr-service/env` (deploy-time file, not in repo — no secrets in the unit). `Restart=always`+`RestartSec=3`+`WantedBy=multi-user.target` cover the "survives reboot/crash" AC. Two justified additions beyond the plan's literal list: `Type=notify` (gunicorn's native sd_notify → accurate systemd readiness) and `TimeoutStartSec=300` (4 workers each loading CLIP+PaddleOCR can exceed systemd's default 90 s window even with T6.1.3 warmup). Bound to loopback only — nginx (T6.2.2) is the sole public entry. No pytest surface (config file); structure verified by inspection, live `systemctl status`/reboot AC owned by T6.3. Rule 7 n/a (no contract surface). |
 | T6.2.2 | nginx.conf: 443 SSL, proxy_pass, 1 MB body, 300 s read timeout, headers | PENDING | — | — |
 | T6.2.3 | Document 4–6 GB RAM budget + 2-worker fallback for 8 GB boxes in README | PENDING | — | — |
 

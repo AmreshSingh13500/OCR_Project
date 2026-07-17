@@ -1,0 +1,62 @@
+# [MODULE]   deploy/ocr-service.service
+# [TASK]     T6.2 — Process & proxy configuration (Phase 6)
+# [SUBTASKS] T6.2.1 systemd unit: gunicorn + 4 uvicorn workers, Restart=always,
+#                    EnvironmentFile=/etc/ocr-service/env
+# [SUMMARY]  systemd service unit that runs the OCR microservice under gunicorn with
+#            uvicorn workers, as the unprivileged ocrsvc user provisioned by
+#            deploy/setup_server.sh (T6.1.1). Binds only to 127.0.0.1:8000 — public
+#            traffic reaches it exclusively through the nginx TLS reverse proxy
+#            (deploy/nginx.conf, T6.2.2). Restarts on crash and starts on boot, so the
+#            service survives reboots (T6.2 AC). Secrets/config come from the
+#            EnvironmentFile at /etc/ocr-service/env (created at deploy time, not in the
+#            repo) so no credentials live in this unit.
+# [PLAN]     IMPLEMENTATION_PLAN.md §4 → T6.2.1
+# [HISTORY]  2026-07-18  T6.2.1  initial systemd unit (gunicorn 4 uvicorn workers,
+#                                 127.0.0.1:8000, --timeout 300, Restart=always,
+#                                 EnvironmentFile=/etc/ocr-service/env)
+
+# [T6.2.1] Process manager unit for the OCR microservice.
+[Unit]
+Description=OCR Microservice (gunicorn + uvicorn workers)
+Documentation=https://docs.gunicorn.org/en/stable/deploy.html
+# Model downloads (warmup, T6.1.3) and the Laravel webhook need the network fully up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Run as the unprivileged service user + venv provisioned by setup_server.sh (T6.1.1):
+#   user/home  = ocrsvc / /opt/ocr-service     (SERVICE_USER / APP_DIR)
+#   venv       = /opt/ocr-service/.venv         (VENV_DIR — holds the pinned gunicorn)
+User=ocrsvc
+Group=ocrsvc
+WorkingDirectory=/opt/ocr-service
+
+# All config + secrets (OCR_API_KEY, LARAVEL_WEBHOOK_*, OPENAI_API_KEY, …) load from
+# this file so none live in the repo. Created at deploy time from .env.example; the unit
+# fails to start if it's absent, which is the intended fail-fast (config.py also validates).
+EnvironmentFile=/etc/ocr-service/env
+
+# gunicorn arbiter with 4 uvicorn (ASGI) workers, bound to loopback only — nginx (T6.2.2)
+# is the sole public entry point. --timeout 300 matches nginx's proxy_read_timeout 300s so
+# a slow OCR/vision request isn't killed by the worker before the proxy gives up. Worker
+# count is the plan's default; the 8 GB-box 2-worker fallback is documented in README (T6.2.3).
+ExecStart=/opt/ocr-service/.venv/bin/gunicorn app.main:app \
+    --workers 4 \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --bind 127.0.0.1:8000 \
+    --timeout 300
+
+# Type=notify: gunicorn's arbiter signals readiness to systemd via sd_notify (native
+# support), so `systemctl status` reflects true readiness and dependents wait correctly.
+Type=notify
+# 4 workers each loading CLIP + PaddleOCR can exceed systemd's default 90 s start window
+# even with weights pre-warmed (T6.1.3); allow generous headroom before systemd gives up.
+TimeoutStartSec=300
+
+# Survive crashes and reboots (T6.2 AC: "service survives reboot").
+Restart=always
+RestartSec=3
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

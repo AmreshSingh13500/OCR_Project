@@ -30,7 +30,7 @@
 | Tasks done | 13 / 17 |
 | Subtasks done | 56 / 68 |
 | Current phase | 6 |
-| Active tasks | — |
+| Active tasks | T6.2 |
 | Blocked tasks | — |
 
 ---
@@ -52,7 +52,7 @@
 | T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T5.2 | Security hardening (app level) | 5 | T1.2, T1.3 | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T6.1 | Server provisioning script | 6 | — | 3/3 | DONE | yes | 2026-07-18 | 2026-07-18 |
-| T6.2 | Process & proxy configuration | 6 | T6.1 | 0/3 | PENDING | no | — | — |
+| T6.2 | Process & proxy configuration | 6 | T6.1 | 0/3 | IN_PROGRESS | no | 2026-07-18 | — |
 | T6.3 | E2E deployment validation | 6 | T6.1, T6.2, T5.1, T5.2 | 0/3 | PENDING | no | — | — |
 | T7.1 | Contract integration test w/ Laravel | 7 | T6.3 + Laravel team ready | 0/3 | PENDING | no | — | — |
 | T7.2 | Accuracy tuning pass | 7 | T7.1 | 0/3 | PENDING | no | — | — |
