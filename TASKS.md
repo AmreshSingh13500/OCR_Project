@@ -27,9 +27,9 @@
 
 | Metric | Value |
 |---|---|
-| Tasks done | 10 / 17 |
-| Subtasks done | 44 / 68 |
-| Current phase | 5 |
+| Tasks done | 9 / 17 |
+| Subtasks done | 40 / 68 |
+| Current phase | 4 |
 | Active tasks | — |
 | Blocked tasks | — |
 
@@ -40,7 +40,7 @@
 | Task ID | Title | Phase | Depends On | Subtasks Done/Total | Status | AC ✔ | Started | Finished |
 |---|---|---|---|---|---|---|---|---|
 | T1.1 | Project scaffold | 1 | — | 4/4 | DONE | yes | 2026-07-16 | 2026-07-16 |
-| T1.2 | Auth & API endpoints | 1 | T1.1 | 0/5 | PENDING | no | — | — |
+| T1.2 | Auth & API endpoints | 1 | T1.1 | 1/5 | IN_PROGRESS | no | 2026-07-17 | — |
 | T1.3 | File downloader (Step 2a) | 1 | T1.1 | 3/3 | DONE | yes | 2026-07-16 | 2026-07-16 |
 | T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 5/5 | DONE | yes | 2026-07-16 | 2026-07-17 |
 | T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
@@ -49,7 +49,7 @@
 | T4.1 | OpenAI structured extraction (Step 5) | 4 | T1.1 | 6/6 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.2 | Laravel webhook return (Step 6) | 4 | T1.1 | 3/3 | DONE | yes | 2026-07-17 | 2026-07-17 |
 | T4.3 | Pipeline orchestrator | 4 | T1.3, T2.1, T2.2, T3.1, T3.2, T4.1, T4.2 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
-| T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 4/4 | DONE | yes | 2026-07-17 | 2026-07-17 |
+| T5.1 | Test suite completion | 5 | T1.1–T4.3 (all) | 0/4 | PENDING | no | — | — |
 | T5.2 | Security hardening (app level) | 5 | T1.2, T1.3 | 0/4 | PENDING | no | — | — |
 | T6.1 | Server provisioning script | 6 | — | 0/3 | PENDING | no | — | — |
 | T6.2 | Process & proxy configuration | 6 | T6.1 | 0/3 | PENDING | no | — | — |
@@ -89,5 +89,4 @@ Tasks inside the same wave can run **in parallel**. A wave may start as soon as 
 | 2026-07-17 | T4.1 AC | Plan's exact AC includes "live smoke test extracts correct fields from native.pdf fixture" — that fixture is owned by T5.1.1 (not yet built) and a live test would require a real (non-placeholder) `OPENAI_API_KEY` and incur actual API cost. Verified the rest of the AC instead (same precedent as T3.1/T3.2): schema enforced (T4.1.1, structural strict-mode checks), nulls handled correctly incl. the empty-list-vs-null distinction (T4.1.2/T4.1.3/T4.1.5), retry fires exactly `OPENAI_MAX_RETRIES`=3 times on mocked 500s then raises `LLMError` (T4.1.4), non-retryable 401 propagates unwrapped on the first attempt, token usage logged only on success (T4.1.6) — all via mocked `openai.OpenAI` client in the project `.venv`, no network calls made. **Re-run a real smoke test against `native.pdf` once T5.1.1 lands and a real `OPENAI_API_KEY` is available.** |
 | 2026-07-17 | T3.2.4 / dev env | Found a real Windows DLL conflict in the `.venv`: importing `paddlepaddle` anywhere in a process before `torch` breaks torch's DLL loading (`shm.dll`, WinError 127) — confirmed it's paddle-before-torch load *order* that breaks it (torch-before-paddle works fine), not merely an unnecessary cross-import (tried `KMP_DUPLICATE_LIB_OK=TRUE`, didn't help; this is a genuine native export mismatch, not the classic OpenMP duplicate-lib issue). Moved `BRANCH_A_PADDLEOCR`/`BRANCH_B_VISION` from `classifier.py` to `app/config.py` so `ocr_engine.py` no longer needs to import `classifier.py` at all (removes an *unnecessary* coupling), but this does **not** fully fix the underlying conflict — `main.py`'s import order (classifier/torch, then ocr_engine/paddle) is what actually avoids it, and now has a defensive comment warning against reordering. Not investigated further: `WinError 127`/`shm.dll` are Windows-specific, and the deploy target is Ubuntu (T6.1) — likely moot in production, but **re-verify no torch/paddle load-order issue exists once T6.1's Linux server is up**, and remove the defensive comment in `main.py` if confirmed moot there. |
 | 2026-07-17 | T5.1 (dependency note) | TASKS.md's own Depends-On column lists "T1.1–T4.3 (all)" for T5.1, which literally includes T1.2 (Auth & API endpoints — still 0/5 PENDING: no `auth.py`/`schemas.py`/`routes.py` exist yet). Proceeding with T5.1 anyway per explicit user direction, since T5.1.2's actual AC text is narrower than the shorthand dependency entry — "coverage ≥80% on `app/pipeline/`" and "all Phase 1–4 AC tests green" for code that exists — and every T5.1 subtask (fixtures, pipeline coverage, orchestrator-level concurrency test, accuracy harness) operates on `app/pipeline/`/`run_pipeline()` directly, none of it touches the HTTP layer T1.2 owns. T1.2's own AC (202 response, 401/422 handling) remains unverified until T1.2 is implemented — do not treat T5.1's rollup to DONE as covering it. `test_auth.py` from the plan's §2 layout is intentionally not created in T5.1.2 for the same reason. |
-| 2026-07-17 | T3.2.4 / dev env (poppler) | `pdftoppm` (poppler-utils) is still not installed on this Windows dev box, confirmed again while building T5.1.1's `scanned.pdf` fixture — `pdf2image.convert_from_bytes()` cannot be exercised for real here. `pdf_handler.py`'s scanned-PDF branch (T2.1.3) continues to be verified via mocking on this machine; `scanned.pdf` is real and committed, but any test that calls `convert_scanned_pdf()` against it for real needs to be skipped on this box (`pytest.mark.skipif` on `shutil.which("pdftoppm")`) and re-run once poppler-utils is available (T6.1's Linux server, or a local poppler install). `tests/test_pdf_handler.py` (T5.1.2) implements exactly this skip guard. |
-| 2026-07-17 | T3.1 AC — resolved | The 2026-07-17 T3.1 AC blocker note ("re-verify against real fixtures once T5.1.1 lands") is now resolved by `tests/test_classifier.py` (T5.1.2): the real CLIP model correctly routes printed_report.jpg → Branch A, handwritten.jpg/medicine_box.jpg → Branch B. Notable finding along the way: T5.1.1's first handwritten.jpg attempt (a clean cursive-font rendering on a plain white background) actually scored *higher* for "printed... document" (CLIP doesn't key on font style alone — a crisp, evenly-spaced vector rendering reads as "printed" regardless of the font used). Fixed by making the fixture look more like a photographed handwritten note: ruled notebook lines, a per-character baseline jitter, a slight page rotation, and grain noise + light blur — after which CLIP scores it 0.58 handwritten vs. 0.42 printed. Worth remembering for T7.2's real-document accuracy pass: CLIP's "printed vs. handwritten" boundary is closer to "clean vector text vs. photographed/imperfect text" than to font style per se. T4.1 AC's live-smoke-test item remains open (needs a real `OPENAI_API_KEY`, still not available in this environment). |
+| 2026-07-17 | T3.2.4 / dev env (poppler) | `pdftoppm` (poppler-utils) is still not installed on this Windows dev box, confirmed again while building T5.1.1's `scanned.pdf` fixture — `pdf2image.convert_from_bytes()` cannot be exercised for real here. `pdf_handler.py`'s scanned-PDF branch (T2.1.3) continues to be verified via mocking on this machine; `scanned.pdf` is real and committed, but any test that calls `convert_scanned_pdf()` against it for real needs to be skipped on this box (`pytest.mark.skipif` on `shutil.which("pdftoppm")`) and re-run once poppler-utils is available (T6.1's Linux server, or a local poppler install). |

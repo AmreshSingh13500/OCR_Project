@@ -29,7 +29,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T1.2.1 | `auth.py` — Bearer token dependency, constant-time compare, 401 | PENDING | — | — |
+| T1.2.1 | `auth.py` — Bearer token dependency, constant-time compare, 401 | DONE | 2026-07-17 | `app/auth.py` — `require_api_key()`, FastAPI dependency using `HTTPBearer(auto_error=False)` + `secrets.compare_digest()` against `settings.OCR_API_KEY`; raises `HTTPException(401)` on missing/wrong token. Verified via `tests/test_auth.py`: correct token passes, wrong token -> 401, missing token -> 401. Full request-level 401 (through the mounted endpoint) is deferred to T1.2.3's route tests. Full suite green in `.venv` (88 passed, 2 skipped, no regressions). |
 | T1.2.2 | `schemas.py` — ProcessRequest / ExtractedData / WebhookPayload per PRD §4.1–4.2 | PENDING | — | — |
 | T1.2.3 | `POST /api/v1/process` — validate → BackgroundTask → 202 immediately | PENDING | — | — |
 | T1.2.4 | `GET /health` — 200 with clip_loaded/paddle_loaded flags, unauthenticated | PENDING | — | — |
