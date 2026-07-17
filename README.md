@@ -27,3 +27,18 @@ uvicorn app.main:app --reload
 
 Deployment (Ubuntu dedicated server) steps and operational notes land in this README as
 Phase 6 (`deploy/`) tasks complete — see IMPLEMENTATION_PLAN.md §4 Phase 6.
+
+## Accuracy harness
+
+`scripts/accuracy_harness.py` (T5.1.4) runs the `tests/fixtures/` documents through the
+real pipeline and reports field-level extraction accuracy against
+`tests/fixtures/ground_truth.py`, per IMPLEMENTATION_PLAN.md §4 T5.1.4. It's a manual,
+pre-release check — not part of `pytest`/CI — and needs a real `OPENAI_API_KEY` (it makes
+real, billed OpenAI calls) and poppler-utils installed (for `scanned.pdf`'s conversion):
+
+```bash
+.venv/Scripts/python.exe -m scripts.accuracy_harness
+```
+
+T7.2.1 re-runs this same harness against ≥30 real anonymized documents for the accuracy
+tuning pass.

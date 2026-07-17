@@ -18,12 +18,18 @@
 [HISTORY]  2026-07-17  T5.1.2  initial committed test file; re-verifies T3.1 AC against
                                 real fixtures (previously only synthetic proxies per
                                 TASKS.md §5)
+           2026-07-17  T5.1.2  fix intermittent failure of the <1.5s inference AC when
+                                run as part of the full suite (found while building
+                                T5.1.4): added a throwaway warmup classify() call in
+                                _clip_loaded so cold-start overhead isn't attributed to
+                                whichever test happens to run the first classify() call
 """
 
 import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 
 from app.config import BRANCH_A_PADDLEOCR, BRANCH_B_VISION
@@ -35,9 +41,18 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 @pytest.fixture(scope="module", autouse=True)
 def _clip_loaded():
-    """Loads the real CLIP model once for this test module (T3.1.1) — cached locally."""
+    """Loads the real CLIP model once for this test module (T3.1.1) — cached locally.
+
+    Runs one throwaway classify() call to absorb first-call cold-start overhead
+    (lazy thread-pool/tokenizer init) before any test times an inference call — the
+    plan's <1.5s AC (T3.1.4) is about steady-state per-image inference, and without
+    this warmup the very first classify() in the whole run (whichever test happens to
+    trigger it) intermittently exceeds 1.5s under a loaded test process, which is a
+    measurement artifact, not a real regression.
+    """
     model, processor = load_clip()
     set_clip(model, processor)
+    classify(np.zeros((224, 224), dtype=np.uint8))
 
 
 def _vision_ready_gray(name: str):
