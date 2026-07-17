@@ -3,8 +3,9 @@
 [TASK]     T4.1 — OpenAI structured extraction (Step 5)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
-[SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and the text-path
-           extraction call. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
+           T4.1.3 Vision path: <=3 base64 JPEGs (quality 85, longest side 1536px)
+[SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
+           call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape (patient_name, doctor_name, diagnosis, procedure, cost,
            medicines) so gpt-4o-mini can never return a malformed or partial payload —
            every field is nullable, so "not found in the document" is expressed as
@@ -12,10 +13,12 @@
            beyond the PRD §4.2 sample (PRD clarification #1, IMPLEMENTATION_PLAN.md
            §8-1); Laravel must tolerate the extra key. `extract_from_text()` sends
            native-PDF text (T2.1) or PaddleOCR output (T3.2) through a single chat
-           completion using the frozen system prompt and returns the parsed JSON dict;
-           it does not yet retry or catch API errors (T4.1.4). The vision path (T4.1.3)
-           will reuse RESPONSE_FORMAT and the same system prompt unchanged.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2
+           completion using the frozen system prompt; `extract_from_images()` sends up
+           to MAX_PDF_PAGES_OCR `vision_ready` images (T2.2), each downscaled to a 1536px
+           longest side and JPEG-encoded at quality 85 to control token cost, through the
+           same schema and system prompt. Neither path retries or catches API errors yet
+           (T4.1.4) or sets the all-nulls flag (T4.1.5).
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2, T4.1.3
 [HISTORY]  2026-07-17  T4.1.1  initial schema definition — first formal definition of
                                 the ExtractedData shape (schemas.py/T1.2.2 not yet
                                 implemented); additive-only, no existing contract to
@@ -23,14 +26,20 @@
            2026-07-17  T4.1.2  add extract_from_text() — module-level OpenAI client +
                                 exact plan system prompt; no schemas.py/routes.py/
                                 webhook_client.py/error-string changes (Rule 7 gate n/a)
+           2026-07-17  T4.1.3  add extract_from_images() + JPEG encode/downscale helper;
+                                reuses RESPONSE_FORMAT/system prompt unchanged from
+                                T4.1.2 — no contract-surface changes (Rule 7 gate n/a)
 """
 
+import base64
 import json
 import logging
 
+import cv2
+import numpy as np
 from openai import OpenAI
 
-from app.config import settings
+from app.config import MAX_PDF_PAGES_OCR, settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +55,10 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "medical document. Return null for any field not present. Do not guess or "
     "fabricate values."
 )
+
+# [T4.1.3] Per plan §4 T4.1.3 exactly — bounds vision token cost/latency.
+_VISION_MAX_LONGEST_SIDE_PX = 1536
+_VISION_JPEG_QUALITY = 85
 
 EXTRACTED_DATA_SCHEMA_NAME = "extracted_medical_data"
 
@@ -100,6 +113,45 @@ def extract_from_text(text: str) -> dict:
         messages=[
             {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
             {"role": "user", "content": text},
+        ],
+        response_format=RESPONSE_FORMAT,
+    )
+    return json.loads(response.choices[0].message.content)
+
+
+# Downscales only when needed (never upscales a smaller image) and re-encodes as JPEG —
+# grayscale is a valid single-component JPEG, no RGB conversion needed for the vision API.
+def _encode_image_base64_jpeg(image: np.ndarray) -> str:
+    h, w = image.shape[:2]
+    longest_side = max(h, w)
+    if longest_side > _VISION_MAX_LONGEST_SIDE_PX:
+        scale = _VISION_MAX_LONGEST_SIDE_PX / longest_side
+        image = cv2.resize(
+            image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA
+        )
+
+    ok, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, _VISION_JPEG_QUALITY])
+    if not ok:
+        raise ValueError("Failed to JPEG-encode image for vision extraction")
+
+    encoded = base64.b64encode(buffer).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+# [T4.1.3] Vision path (Branch B / handwritten, scans, medicine boxes) — same schema and
+# system prompt as the text path, but the user turn carries up to MAX_PDF_PAGES_OCR
+# `vision_ready` images instead of raw text. Truncates defensively to MAX_PDF_PAGES_OCR
+# even though the orchestrator (T4.3) is expected to already cap page count upstream.
+def extract_from_images(images: list[np.ndarray]) -> dict:
+    content = [
+        {"type": "image_url", "image_url": {"url": _encode_image_base64_jpeg(image)}}
+        for image in images[:MAX_PDF_PAGES_OCR]
+    ]
+    response = _client.chat.completions.create(
+        model=settings.OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": content},
         ],
         response_format=RESPONSE_FORMAT,
     )
