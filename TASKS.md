@@ -40,7 +40,7 @@
 | Task ID | Title | Phase | Depends On | Subtasks Done/Total | Status | AC ✔ | Started | Finished |
 |---|---|---|---|---|---|---|---|---|
 | T1.1 | Project scaffold | 1 | — | 4/4 | DONE | yes | 2026-07-16 | 2026-07-16 |
-| T1.2 | Auth & API endpoints | 1 | T1.1 | 2/5 | IN_PROGRESS | no | 2026-07-17 | — |
+| T1.2 | Auth & API endpoints | 1 | T1.1 | 3/5 | IN_PROGRESS | no | 2026-07-17 | — |
 | T1.3 | File downloader (Step 2a) | 1 | T1.1 | 3/3 | DONE | yes | 2026-07-16 | 2026-07-16 |
 | T2.1 | Smart PDF detection (Step 2b) | 2 | T1.3 | 5/5 | DONE | yes | 2026-07-16 | 2026-07-17 |
 | T2.2 | OpenCV pre-processing (Step 3) | 2 | T1.1 | 5/5 | DONE | yes | 2026-07-17 | 2026-07-17 |
