@@ -133,7 +133,7 @@
 
 | ID | Summary | Status | Done on | Notes |
 |---|---|---|---|---|
-| T6.1.1 | `setup_server.sh` — apt deps, service user, venv, pip install | PENDING | — | — |
+| T6.1.1 | `setup_server.sh` — apt deps, service user, venv, pip install | DONE | 2026-07-18 | `deploy/setup_server.sh` (extended in place per Rule 3 from T2.1.4's poppler-only stub). Full AlmaLinux 9 provisioning: EPEL+CRB enable, `dnf install` python3.12/poppler-utils/nginx/mesa-libGL+glib2/certbot+nginx-plugin, persistent SELinux `httpd_can_network_connect` (for T6.2 nginx→gunicorn proxy), `ocrsvc` system user (nologin, home=/opt/ocr-service), and a service-owned venv built with `python3.12 -m venv` + `pip install -r requirements.txt`. **Plan deviation:** plan says Ubuntu/apt/UFW/libgl1 but TASKS.md §5 (2026-07-17) records the AlmaLinux 9 decision that supersedes it → dnf/firewalld/python3.12/mesa-libGL used; poppler-utils T2.1.4 line migrated apt→dnf (ID kept, HISTORY appended). Root-required + idempotent (id/user guards, `install -d`). Verified `bash -n` clean (shellcheck unavailable on this Windows box); full-VM unattended-run AC is owned by T6.3 (no pytest surface for a provisioning script). Rule 7 n/a (no contract surface touched). |
 | T6.1.2 | UFW: deny incoming, allow 22+443 only; certbot port-80 renewal hooks | PENDING | — | — |
 | T6.1.3 | Model warmup script — pre-download CLIP + PaddleOCR weights | PENDING | — | — |
 
