@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<!--
+  test_ui/static/index.html
+  Local dev/testing UI for the OCR microservice (out-of-plan tool — see test_ui/server.py).
+  Single-page, no external dependencies. POSTs input to /run-upload or /run-url to get a
+  job_id, then streams live logs from /stream/{job_id} over Server-Sent Events.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OCR Microservice — Local Test UI</title>
+  <style>
+    :root {
+      --bg: #0f1720;
+      --panel: #1a2430;
+      --panel-2: #223041;
+      --border: #2c3d50;
+      --text: #e6edf3;
+      --muted: #8b9bad;
+      --accent: #4f9cf9;
+      --accent-2: #2b7de0;
+      --ok: #3fb950;
+      --err: #f85149;
+      --warn: #d29922;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      padding: 22px 24px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #16202b, #0f1720);
+    }
+    header h1 { margin: 0; font-size: 20px; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .tabs { display: flex; gap: 8px; margin-bottom: 18px; }
+    .tab {
+      flex: 1; padding: 12px;
+      border: 1px solid var(--border); border-radius: 10px;
+      background: var(--panel-2); color: var(--muted);
+      cursor: pointer; font-size: 14px; font-weight: 600; text-align: center;
+      transition: all .15s;
+    }
+    .tab.active { color: #fff; border-color: var(--accent); background: #1c2c3f; }
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .drop {
+      border: 2px dashed var(--border); border-radius: 10px;
+      padding: 30px; text-align: center; color: var(--muted); cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .drop:hover, .drop.drag { border-color: var(--accent); background: #16222f; }
+    .drop strong { color: var(--text); }
+    #fileInput { display: none; }
+    .preview { margin-top: 14px; text-align: center; }
+    .preview img { max-width: 100%; max-height: 300px; border-radius: 8px; border: 1px solid var(--border); }
+    .preview .fname { color: var(--muted); font-size: 13px; margin-top: 8px; word-break: break-all; }
+
+    label.lbl { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    textarea {
+      width: 100%; min-height: 120px; resize: vertical;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; font-family: var(--mono); font-size: 13px;
+    }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+    button.run {
+      margin-top: 16px; width: 100%; padding: 13px;
+      border: none; border-radius: 10px; background: var(--accent-2);
+      color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; transition: background .15s;
+    }
+    button.run:hover { background: var(--accent); }
+    button.run:disabled { opacity: .55; cursor: not-allowed; }
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.35); border-top-color: #fff;
+      border-radius: 50%; animation: spin .7s linear infinite;
+      vertical-align: -3px; margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Live log console */
+    #logCard { display: none; }
+    .logbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+    .logbar h3 { margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); animation: pulse 1.2s infinite; }
+    @keyframes pulse { 50% { opacity: .4; } }
+    #log {
+      background: #0a0f15; border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; height: 320px; overflow-y: auto;
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
+    }
+    .line { white-space: pre-wrap; word-break: break-word; display: flex; gap: 8px; }
+    .line .ts { color: #55677a; flex: 0 0 auto; }
+    .line .tag { flex: 0 0 auto; font-weight: 700; padding: 0 6px; border-radius: 4px; font-size: 11px; }
+    .line .txt { flex: 1; }
+    /* per-source tag colors */
+    .tag-STEP { background:#243b53; color:#9fc7ff; }
+    .tag-Download { background:#3a2c14; color:#e0b775; }
+    .tag-PDF { background:#3a2440; color:#d99fe0; }
+    .tag-OpenCV { background:#14332a; color:#7fe0c0; }
+    .tag-CLIP { background:#2a1f40; color:#c0a5ff; }
+    .tag-PaddleOCR { background:#123040; color:#7fd0f0; }
+    .tag-OpenAI { background:#0f3320; color:#7fe090; }
+    .tag-Pipeline { background:#2c3d50; color:#c7d5e3; }
+    .tag-Webhook { background:#402020; color:#f0a5a5; }
+    .lvl-WARNING .txt { color: var(--warn); }
+    .lvl-ERROR .txt, .lvl-CRITICAL .txt { color: var(--err); }
+    .lvl-DEBUG .txt { color: #7f8fa0; }
+
+    /* Result */
+    #result { display: none; }
+    .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+    .badge.ok { background: rgba(63,185,80,.15); color: var(--ok); border: 1px solid rgba(63,185,80,.4); }
+    .badge.err { background: rgba(248,81,73,.15); color: var(--err); border: 1px solid rgba(248,81,73,.4); }
+    .meta { display: flex; flex-wrap: wrap; gap: 10px 24px; margin: 14px 0; font-size: 13px; }
+    .meta .k { color: var(--muted); }
+    .meta .v { font-family: var(--mono); }
+    .errmsg { background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.35); color: #ffb4ae; padding: 12px 14px; border-radius: 8px; margin: 12px 0; font-size: 14px; }
+    table.fields { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    table.fields th, table.fields td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: top; }
+    table.fields th { color: var(--muted); font-weight: 600; width: 34%; }
+    table.fields td.null { color: var(--muted); font-style: italic; }
+    details { margin-top: 16px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+    pre.raw { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow: auto; font-family: var(--mono); font-size: 12.5px; margin-top: 10px; }
+    h3.section { font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: 18px 0 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>OCR Microservice — Local Test UI</h1>
+    <p>Runs the real pipeline in-process and streams live logs showing which library/model each step uses. Extraction needs a valid OPENAI_API_KEY in your .env.</p>
+  </header>
+
+  <div class="wrap">
+    <div class="card">
+      <div class="tabs">
+        <div class="tab active" data-tab="upload">📤 Upload image / PDF</div>
+        <div class="tab" data-tab="url">🔗 Image URL / JSON</div>
+      </div>
+
+      <div class="panel active" id="panel-upload">
+        <div class="drop" id="drop">
+          <strong>Click to choose</strong> or drop an image / PDF here
+          <div class="hint">JPEG, PNG or PDF · max 25 MB</div>
+        </div>
+        <input type="file" id="fileInput" accept="image/*,application/pdf" />
+        <div class="preview" id="preview"></div>
+        <button class="run" id="runUpload" disabled>Run OCR</button>
+      </div>
+
+      <div class="panel" id="panel-url">
+        <label class="lbl">Paste an image URL, or a JSON object (matching the real /api/v1/process body)</label>
+        <textarea id="jsonInput" spellcheck="false">{
+  "file_url": "https://example.com/path/to/report.jpg"
+}</textarea>
+        <div class="hint">Accepts a bare URL string too. Only <code>file_url</code> is required.</div>
+        <button class="run" id="runUrl">Run OCR</button>
+      </div>
+    </div>
+
+    <!-- Live log -->
+    <div class="card" id="logCard">
+      <div class="logbar">
+        <h3>Live pipeline log</h3>
+        <span class="live"><span class="dot" id="liveDot"></span><span id="liveText">idle</span></span>
+      </div>
+      <div id="log"></div>
+    </div>
+
+    <!-- Result -->
+    <div class="card" id="result">
+      <div id="statusRow"></div>
+      <div class="meta" id="metaRow"></div>
+      <div id="errBox"></div>
+      <div id="fieldsBox"></div>
+      <details>
+        <summary>Raw webhook payload (JSON)</summary>
+        <pre class="raw" id="rawJson"></pre>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    const FIELD_LABELS = {
+      patient_name: "Patient name", doctor_name: "Doctor name", diagnosis: "Diagnosis",
+      procedure: "Procedure", cost: "Cost", medicines: "Medicines",
+    };
+
+    // Tabs
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+        tab.classList.add("active");
+        document.getElementById("panel-" + tab.dataset.tab).classList.add("active");
+      });
+    });
+
+    // Upload handling
+    const drop = document.getElementById("drop");
+    const fileInput = document.getElementById("fileInput");
+    const preview = document.getElementById("preview");
+    const runUploadBtn = document.getElementById("runUpload");
+    let chosenFile = null;
+
+    drop.addEventListener("click", () => fileInput.click());
+    drop.addEventListener("dragover", ev => { ev.preventDefault(); drop.classList.add("drag"); });
+    ["dragleave", "drop"].forEach(e => drop.addEventListener(e, () => drop.classList.remove("drag")));
+    drop.addEventListener("drop", ev => {
+      ev.preventDefault();
+      if (ev.dataTransfer.files.length) { fileInput.files = ev.dataTransfer.files; showFile(ev.dataTransfer.files[0]); }
+    });
+    fileInput.addEventListener("change", () => { if (fileInput.files.length) showFile(fileInput.files[0]); });
+
+    function showFile(file) {
+      chosenFile = file;
+      runUploadBtn.disabled = false;
+      preview.innerHTML = "";
+      if (file.type.startsWith("image/")) {
+        const img = document.createElement("img");
+        img.src = URL.createObjectURL(file);
+        preview.appendChild(img);
+      }
+      const fn = document.createElement("div");
+      fn.className = "fname";
+      fn.textContent = file.name + "  (" + (file.size / 1024).toFixed(1) + " KB)";
+      preview.appendChild(fn);
+    }
+
+    // Run actions
+    let busy = false;
+    runUploadBtn.addEventListener("click", () => {
+      if (!chosenFile || busy) return;
+      const fd = new FormData();
+      fd.append("file", chosenFile);
+      start("/run-upload", { method: "POST", body: fd });
+    });
+    document.getElementById("runUrl").addEventListener("click", () => {
+      if (busy) return;
+      const raw = document.getElementById("jsonInput").value.trim();
+      let body;
+      try { body = JSON.stringify(raw.startsWith("{") || raw.startsWith('"') ? JSON.parse(raw) : raw); }
+      catch (e) { body = JSON.stringify(raw); }
+      start("/run-url", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    });
+
+    async function start(url, opts) {
+      setBusy(true);
+      resetPanels();
+      let jobId;
+      try {
+        const res = await fetch(url, opts);
+        const data = await res.json();
+        if (!res.ok || !data.job_id) throw new Error(data.error || "Failed to start job");
+        jobId = data.job_id;
+      } catch (e) {
+        renderHarnessError(e.message);
+        setBusy(false);
+        return;
+      }
+      streamLogs(jobId);
+    }
+
+    function streamLogs(jobId) {
+      const es = new EventSource("/stream/" + jobId);
+      es.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === "log") appendLog(m);
+        else if (m.type === "result") renderResult(m);
+        else if (m.type === "done") { es.close(); setBusy(false); }
+      };
+      es.onerror = () => { es.close(); setBusy(false); setLive(false); };
+    }
+
+    // Log console
+    const logEl = document.getElementById("log");
+    function appendLog(m) {
+      const line = document.createElement("div");
+      line.className = "line lvl-" + m.level;
+      line.innerHTML =
+        '<span class="ts">' + m.t + '</span>' +
+        '<span class="tag tag-' + m.source + '">' + m.source + '</span>' +
+        '<span class="txt">' + escapeHtml(m.message) + '</span>';
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setBusy(b) {
+      busy = b;
+      runUploadBtn.disabled = b || !chosenFile;
+      document.getElementById("runUrl").disabled = b;
+      runUploadBtn.innerHTML = b ? '<span class="spinner"></span>Processing…' : 'Run OCR';
+      document.getElementById("runUrl").innerHTML = b ? '<span class="spinner"></span>Processing…' : 'Run OCR';
+      setLive(b);
+    }
+    function setLive(on) {
+      document.getElementById("liveDot").classList.toggle("on", on);
+      document.getElementById("liveText").textContent = on ? "streaming…" : "done";
+    }
+    function resetPanels() {
+      document.getElementById("logCard").style.display = "block";
+      document.getElementById("result").style.display = "none";
+      logEl.innerHTML = "";
+    }
+
+    // Result
+    function renderHarnessError(msg) {
+      const result = document.getElementById("result");
+      result.style.display = "block";
+      document.getElementById("statusRow").innerHTML = '<span class="badge err">Harness error</span>';
+      document.getElementById("metaRow").innerHTML = "";
+      document.getElementById("errBox").innerHTML = '<div class="errmsg">' + escapeHtml(msg) + "</div>";
+      document.getElementById("fieldsBox").innerHTML = "";
+      document.getElementById("rawJson").textContent = "";
+    }
+
+    function renderResult(data) {
+      const result = document.getElementById("result");
+      result.style.display = "block";
+      if (!data.ok || !data.webhook_payload) { renderHarnessError(data.error || "Unknown error"); return; }
+
+      const p = data.webhook_payload;
+      const isSuccess = p.status === "success";
+      document.getElementById("statusRow").innerHTML =
+        '<span class="badge ' + (isSuccess ? "ok" : "err") + '">' + p.status + "</span>";
+      document.getElementById("metaRow").innerHTML =
+        metaItem("processing_path", p.processing_path || "—") +
+        metaItem("elapsed", data.elapsed_ms + " ms") +
+        metaItem("case_id", p.case_id);
+      document.getElementById("errBox").innerHTML = p.error_message
+        ? '<div class="errmsg"><strong>error_message:</strong> ' + escapeHtml(p.error_message) + "</div>"
+        : "";
+
+      const fieldsBox = document.getElementById("fieldsBox");
+      if (p.extracted_data) {
+        let rows = "";
+        for (const key of Object.keys(FIELD_LABELS)) {
+          const val = p.extracted_data[key];
+          let cell;
+          if (val === null || val === undefined) cell = '<td class="null">null</td>';
+          else if (Array.isArray(val)) cell = "<td>" + (val.length ? val.map(escapeHtml).join("<br>") : '<span class="null">empty list</span>') + "</td>";
+          else cell = "<td>" + escapeHtml(String(val)) + "</td>";
+          rows += "<tr><th>" + FIELD_LABELS[key] + "</th>" + cell + "</tr>";
+        }
+        fieldsBox.innerHTML = '<h3 class="section">Extracted data</h3><table class="fields">' + rows + "</table>";
+      } else {
+        fieldsBox.innerHTML = '<h3 class="section">Extracted data</h3><p class="hint">No extracted_data (error path).</p>';
+      }
+      document.getElementById("rawJson").textContent = JSON.stringify(p, null, 2);
+      result.scrollIntoView({ behavior: "smooth" });
+    }
+
+    function metaItem(k, v) {
+      return '<div><span class="k">' + k + ':</span> <span class="v">' + escapeHtml(String(v)) + "</span></div>";
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+  </script>
+</body>
+</html>
