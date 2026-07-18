@@ -140,6 +140,25 @@
     table.fields th, table.fields td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 14px; vertical-align: top; }
     table.fields th { color: var(--muted); font-weight: 600; width: 34%; }
     table.fields td.null { color: var(--muted); font-style: italic; }
+    .doc-id { margin: 6px 0 4px; }
+    .doc-type {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 700;
+      background: rgba(79,156,249,.15);
+      color: var(--accent);
+      border: 1px solid rgba(79,156,249,.4);
+      text-transform: capitalize;
+    }
+    .doc-summary { margin: 10px 2px 0; font-size: 14.5px; line-height: 1.65; }
+    .doc-lang {
+      background: rgba(63,185,80,.12);
+      color: var(--ok);
+      border-color: rgba(63,185,80,.4);
+      margin-left: 6px;
+    }
     details { margin-top: 16px; }
     summary { cursor: pointer; color: var(--muted); font-size: 13px; }
     pre.raw { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow: auto; font-family: var(--mono); font-size: 12.5px; margin-top: 10px; }
@@ -354,16 +373,43 @@
 
       const fieldsBox = document.getElementById("fieldsBox");
       if (p.extracted_data) {
+        const d = p.extracted_data;
+        let html = "";
+
+        // Document identity: what kind of document, original language + written summary
+        html += '<h3 class="section">Document</h3>';
+        html += '<div class="doc-id">';
+        html += '<span class="doc-type">' + (d.document_type ? escapeHtml(d.document_type) : '<span class="null">type unknown</span>') + "</span>";
+        if (d.original_language) {
+          html += ' <span class="doc-type doc-lang">🌐 ' + escapeHtml(d.original_language) + "</span>";
+        }
+        html += d.document_summary
+          ? '<p class="doc-summary">' + escapeHtml(d.document_summary) + "</p>"
+          : '<p class="doc-summary null">No summary returned.</p>';
+        html += "</div>";
+
+        // Medical fields (null for non-medical documents)
         let rows = "";
         for (const key of Object.keys(FIELD_LABELS)) {
-          const val = p.extracted_data[key];
+          const val = d[key];
           let cell;
           if (val === null || val === undefined) cell = '<td class="null">null</td>';
           else if (Array.isArray(val)) cell = "<td>" + (val.length ? val.map(escapeHtml).join("<br>") : '<span class="null">empty list</span>') + "</td>";
           else cell = "<td>" + escapeHtml(String(val)) + "</td>";
           rows += "<tr><th>" + FIELD_LABELS[key] + "</th>" + cell + "</tr>";
         }
-        fieldsBox.innerHTML = '<h3 class="section">Extracted data</h3><table class="fields">' + rows + "</table>";
+        html += '<h3 class="section">Medical fields</h3><table class="fields">' + rows + "</table>";
+
+        // Everything else the model found on the document
+        if (Array.isArray(d.additional_details) && d.additional_details.length) {
+          let drows = "";
+          for (const item of d.additional_details) {
+            drows += "<tr><th>" + escapeHtml(item.field ?? "") + "</th><td>" + escapeHtml(item.value ?? "") + "</td></tr>";
+          }
+          html += '<h3 class="section">Additional details</h3><table class="fields">' + drows + "</table>";
+        }
+
+        fieldsBox.innerHTML = html;
       } else {
         fieldsBox.innerHTML = '<h3 class="section">Extracted data</h3><p class="hint">No extracted_data (error path).</p>';
       }

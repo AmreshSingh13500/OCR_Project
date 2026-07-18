@@ -2,7 +2,18 @@
 [MODULE]   tests/test_llm_extractor.py
 [TASK]     T4.1 — OpenAI structured extraction (Step 5)
            T5.1 — Test suite completion
-[SUBTASKS] T4.1.1 AC: strict JSON schema mirrors ExtractedData
+           T8.1 — Generalized any-document extraction (additive contract update)
+           T8.2 — Multi-language documents + extraction fidelity (additive)
+[SUBTASKS] T8.2.1 AC: original_language nullable + required (strict), 10-key shape;
+                  prompt carries the language/English-output/transliteration rules
+           T8.2.3 AC: prompt carries verbatim-transcription rules; vision items send
+                  detail:"high"
+           T8.1.1 AC: 3 new nullable keys additive (legacy 6 byte-identical); nested
+                  additional_details item strict-compliant; general-document-only
+                  result not flagged unreadable
+           T8.1.2 AC: text + vision paths share the generalized prompt (incl. the
+                  unreadable->all-null instruction)
+           T4.1.1 AC: strict JSON schema mirrors ExtractedData
            T4.1.2 AC: text path sends the frozen system prompt + correct response_format
            T4.1.3 AC: vision path downscales >1536px images, never upscales, truncates
                   to MAX_PDF_PAGES_OCR
@@ -25,6 +36,14 @@
 [PLAN]     IMPLEMENTATION_PLAN.md §4 → T4.1.1, T4.1.2, T4.1.3, T4.1.4, T4.1.5, T4.1.6; §5 → T5.1.2
 [HISTORY]  2026-07-17  T5.1.2  initial committed test file (backfills T4.1's ad hoc
                                 verification with real mocked-client tests)
+           2026-07-18  T8.1.1  _ALL_NULL_RESULT extended to the 9-key shape; new
+                                additive-schema + strict-nested-object + non-medical
+                                is_all_fields_null tests; _LEGACY_SCHEMA_PROPERTIES
+                                locks the Rule 7 frozen surface
+           2026-07-18  T8.1.2  new shared-generalized-prompt test (text + vision)
+           2026-07-19  T8.2.1  _ALL_NULL_RESULT extended to 10 keys; original_language
+                                schema test + language/verbatim prompt-rule test
+           2026-07-19  T8.2.3  vision detail:"high" test
 """
 
 import json
@@ -56,6 +75,19 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 _ALL_NULL_RESULT = {
     "patient_name": None, "doctor_name": None, "diagnosis": None,
     "procedure": None, "cost": None, "medicines": None,
+    "document_type": None, "document_summary": None, "additional_details": None,
+    "original_language": None,
+}
+
+# [T8.1.1] The 6 pre-T8.1 keys with their exact schema entries — the Rule 7 frozen
+# surface an additive change must never touch.
+_LEGACY_SCHEMA_PROPERTIES = {
+    "patient_name": {"type": ["string", "null"]},
+    "doctor_name": {"type": ["string", "null"]},
+    "diagnosis": {"type": ["string", "null"]},
+    "procedure": {"type": ["string", "null"]},
+    "cost": {"type": ["string", "null"]},
+    "medicines": {"type": ["array", "null"], "items": {"type": "string"}},
 }
 
 
@@ -217,11 +249,93 @@ def test_is_all_fields_null_does_not_conflate_empty_list_with_null():
     assert is_all_fields_null(data) is False
 
 
+def test_is_all_fields_null_false_when_only_general_document_fields_present():
+    """[T8.1.1] AC: a non-medical document (6 medical fields null, new fields filled) is NOT flagged unreadable."""
+    data = dict(
+        _ALL_NULL_RESULT,
+        document_type="passport",
+        document_summary="This is a passport belonging to Jane Doe.",
+        additional_details=[{"field": "Passport Number", "value": "N1234567"}],
+    )
+    assert is_all_fields_null(data) is False
+
+
 def test_json_schema_property_and_required_sets_match():
     """[T4.1.1] AC: strict-mode schema — property set equals required set, additionalProperties is False."""
     schema = EXTRACTED_DATA_JSON_SCHEMA
     assert set(schema["properties"].keys()) == set(schema["required"])
     assert schema["additionalProperties"] is False
+
+
+def test_schema_gains_general_document_keys_without_touching_legacy_keys():
+    """[T8.1.1] AC: 3 new nullable keys present; the 6 legacy key definitions are byte-identical (Rule 7 additive)."""
+    props = EXTRACTED_DATA_JSON_SCHEMA["properties"]
+    for key, expected in _LEGACY_SCHEMA_PROPERTIES.items():
+        assert props[key] == expected
+    assert props["document_type"] == {"type": ["string", "null"]}
+    assert props["document_summary"] == {"type": ["string", "null"]}
+    assert props["additional_details"]["type"] == ["array", "null"]
+
+
+def test_additional_details_item_object_is_strict_mode_compliant():
+    """[T8.1.1] AC: nested additional_details item object — properties == required == {field, value}, additionalProperties False."""
+    item = EXTRACTED_DATA_JSON_SCHEMA["properties"]["additional_details"]["items"]
+    assert item["type"] == "object"
+    assert set(item["properties"].keys()) == {"field", "value"} == set(item["required"])
+    assert item["additionalProperties"] is False
+
+
+def test_text_and_vision_paths_share_the_generalized_prompt(monkeypatch):
+    """[T8.1.2] AC: extract_from_text and extract_from_images send the same generalized system prompt."""
+    prompts = []
+
+    def fake_create(**kwargs):
+        prompts.append(kwargs["messages"][0]["content"])
+        return _fake_response(_ALL_NULL_RESULT)
+
+    monkeypatch.setattr(llm_extractor._client.chat.completions, "create", fake_create)
+
+    extract_from_text("some text")
+    extract_from_images([np.zeros((50, 50), dtype=np.uint8)])
+
+    assert prompts[0] == prompts[1] == llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    assert "document_type" in prompts[0]
+    assert "additional_details" in prompts[0]
+    assert "unreadable" in prompts[0]  # the all-null instruction T4.1.5 depends on
+
+
+def test_schema_gains_original_language_key():
+    """[T8.2.1] AC: original_language present, nullable, in required (strict mode); 10-key shape."""
+    props = EXTRACTED_DATA_JSON_SCHEMA["properties"]
+    assert props["original_language"] == {"type": ["string", "null"]}
+    assert "original_language" in EXTRACTED_DATA_JSON_SCHEMA["required"]
+    assert len(props) == 10
+
+
+def test_prompt_contains_language_and_verbatim_accuracy_rules():
+    """[T8.2.1][T8.2.3] AC: prompt carries the language rules (English output, transliteration, original_language) and the verbatim-transcription rules."""
+    prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    assert "original_language" in prompt
+    assert "English" in prompt
+    assert "transliterated" in prompt
+    assert "EXACTLY" in prompt  # verbatim transcription rule
+    assert "Never guess or fabricate" in prompt
+
+
+def test_vision_images_are_sent_with_high_detail(monkeypatch):
+    """[T8.2.3] AC: every vision image_url item requests detail='high' for document-text fidelity."""
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _fake_response(_ALL_NULL_RESULT)
+
+    monkeypatch.setattr(llm_extractor._client.chat.completions, "create", fake_create)
+
+    extract_from_images([np.zeros((50, 50), dtype=np.uint8) for _ in range(2)])
+
+    user_content = captured["messages"][1]["content"]
+    assert all(item["image_url"]["detail"] == "high" for item in user_content)
 
 
 @pytest.mark.skipif(

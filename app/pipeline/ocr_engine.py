@@ -1,10 +1,12 @@
 """
 [MODULE]   app/pipeline/ocr_engine.py
 [TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
+           T8.2 — Multi-language documents + extraction fidelity (additive)
 [SUBTASKS] T3.2.1 initialize PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False) once at startup
            T3.2.2 extract_text(): OCR ocr_ready image, join lines top-to-bottom, log confidence
            T3.2.3 extract_text_async(): asyncio.Lock + run_in_executor thread-safety guard
            T3.2.4 should_reroute_to_vision(): <20-char fallback rule, logs the reroute
+           T8.2.2 OcrResult(text, mean_confidence) + <0.80 mean-confidence reroute rule
 [SUMMARY]  Local CPU OCR engine for Branch A (printed documents). `load_paddleocr()`
            initializes a single PaddleOCR instance at app startup (lifespan) — angle
            classification on (photographed documents may be slightly rotated), English,
@@ -24,7 +26,15 @@
            `should_reroute_to_vision()` is a separate decision step the orchestrator
            (T4.3) calls after getting OCR text — it doesn't reroute anything itself
            (extract_text() has no notion of "branches"), it just answers whether this
-           page's OCR output is too short to trust and logs when it is. It imports
+           page's OCR output is too short (T3.2.4) or too low-confidence (T8.2.2) to
+           trust and logs when it is. Since T8.2.2, extract_text()/extract_text_async()
+           return `OcrResult(text, mean_confidence)` — the mean of PaddleOCR's per-line
+           recognition confidences — because this engine only reads `lang='en'`: an
+           Arabic/foreign-script or badly degraded page still "reads" as long-but-garbled
+           Latin text at low confidence, which the char-count rule alone would wrongly
+           trust and the LLM would then plausibilize into fabricated values (the observed
+           wrong-doctor-name failure). Low mean confidence → vision, which reads any
+           language natively. It imports
            `BRANCH_B_VISION` from app/config.py, not from classifier.py — importing
            classifier.py (torch) here hit a real Windows DLL conflict with paddlepaddle
            (paddle-before-torch import order breaks torch's shm.dll load); config.py has
@@ -37,10 +47,19 @@
                                 imports BRANCH_B_VISION from app/config.py (not
                                 classifier.py) to avoid a torch/paddle DLL load-order
                                 conflict — see classifier.py [HISTORY] for the full story
+           2026-07-19  T8.2.2  extract_text()/extract_text_async() now return
+                                OcrResult(text, mean_confidence);
+                                should_reroute_to_vision() gains an optional
+                                mean_confidence arg and a <0.80 reroute rule — internal
+                                refactor only (Rule 7B, full suite re-verified green);
+                                no schemas.py/routes.py/webhook_client.py/error-string
+                                changes (Rule 7 gate n/a)
 """
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 from paddleocr import PaddleOCR
@@ -52,6 +71,22 @@ logger = logging.getLogger(__name__)
 # [T3.2.4] Per plan §4 T3.2.4 exactly — below this many characters, PaddleOCR likely
 # failed to read the page (blank, garbled, or misrouted) and vision is the safer bet.
 _MIN_OCR_CHARS = 20
+
+# [T8.2.2] Below this mean per-line recognition confidence, the text is likely garbled —
+# typically a non-Latin-script page read by this en-only engine, or a badly degraded
+# print. Clean English prints score ~0.90+; trusting garbled text is what lets the LLM
+# plausibilize wrong names, so vision (reads any language) is the safer bet. Tunable in
+# T7.2 alongside the other thresholds.
+_MIN_OCR_MEAN_CONFIDENCE = 0.80
+
+
+# [T8.2.2] extract_text()'s return shape: the joined text plus the mean of PaddleOCR's
+# per-line recognition confidences (0.0 when nothing was detected) so the reroute
+# decision can consider quality, not just quantity, of the OCR output.
+@dataclass
+class OcrResult:
+    text: str
+    mean_confidence: float
 
 
 # [T3.2.1] Initialize PaddleOCR once at app startup (lifespan) — CPU only; angle
@@ -83,27 +118,33 @@ def get_paddleocr() -> PaddleOCR:
 # rather than assuming a list. Lines are sorted by each box's top-left y-coordinate before
 # joining, so the output reading order is guaranteed by our own code, not an assumption
 # about the library's internal detection order.
-def extract_text(ocr_ready: np.ndarray) -> str:
+def extract_text(ocr_ready: np.ndarray) -> OcrResult:
     """
-    Run PaddleOCR on an ocr_ready binary image. Returns detected text lines joined
-    top-to-bottom (newline-separated); "" if no text is detected. Per-line confidence
-    is logged at DEBUG per plan §4 T3.2.2.
+    Run PaddleOCR on an ocr_ready binary image. Returns an OcrResult with detected text
+    lines joined top-to-bottom (newline-separated) and the mean per-line recognition
+    confidence (T8.2.2); text="" / confidence=0.0 if no text is detected. Per-line
+    confidence is logged at DEBUG per plan §4 T3.2.2.
     """
     ocr = get_paddleocr()
     result = ocr.ocr(ocr_ready, cls=True)
 
     lines = result[0] if result else None
     if not lines:
-        return ""
+        return OcrResult(text="", mean_confidence=0.0)
 
     lines_sorted = sorted(lines, key=lambda line: min(point[1] for point in line[0]))
 
     texts = []
+    confidences = []
     for _box, (text, confidence) in lines_sorted:
         logger.debug("OCR line: text=%r confidence=%.4f", text, confidence)
         texts.append(text)
+        confidences.append(float(confidence))
 
-    return "\n".join(texts)
+    return OcrResult(
+        text="\n".join(texts),
+        mean_confidence=sum(confidences) / len(confidences),
+    )
 
 
 # [T3.2.3] The shared PaddleOCR instance is not thread-safe under concurrent calls
@@ -114,7 +155,7 @@ def extract_text(ocr_ready: np.ndarray) -> str:
 _paddle_ocr_lock = asyncio.Lock()
 
 
-async def extract_text_async(ocr_ready: np.ndarray) -> str:
+async def extract_text_async(ocr_ready: np.ndarray) -> OcrResult:
     """
     Thread-safe async entry point for extract_text() — the one pipeline code should call
     from request-handling paths. Serializes access to the shared PaddleOCR engine via
@@ -126,18 +167,30 @@ async def extract_text_async(ocr_ready: np.ndarray) -> str:
         return await loop.run_in_executor(None, extract_text, ocr_ready)
 
 
-# [T3.2.4] Per plan §4 T3.2.4 exactly. Doesn't perform the reroute itself — the
-# orchestrator (T4.3) owns branch dispatch — just answers the question and logs when
+# [T3.2.4] Per plan §4 T3.2.4 exactly (char rule). Doesn't perform the reroute itself —
+# the orchestrator (T4.3) owns branch dispatch — just answers the question and logs when
 # the answer is yes, so the reroute is visible in the logs even before T4.3 exists.
-def should_reroute_to_vision(text: str) -> bool:
+# [T8.2.2] mean_confidence (optional so the char rule can still be checked alone) adds
+# the quality gate: long-but-garbled output — an Arabic/foreign-script page read by this
+# en-only engine, or a badly degraded print — passes the char count but must not be
+# trusted, or the LLM downstream plausibilizes wrong values from mangled text.
+def should_reroute_to_vision(text: str, mean_confidence: Optional[float] = None) -> bool:
     """
-    True when a Branch-A page's OCR output is too short to trust (<20 chars per the
-    plan's fallback rule) and should be rerouted to Branch B (vision) instead.
+    True when a Branch-A page's OCR output should be rerouted to Branch B (vision):
+    <20 chars (T3.2.4's fallback rule), or mean recognition confidence below 0.80
+    (T8.2.2's quality gate — skipped when mean_confidence is None).
     """
     if len(text) < _MIN_OCR_CHARS:
         logger.warning(
             "OCR fallback: only %d char(s) extracted (<%d threshold) — rerouting page to %s",
             len(text), _MIN_OCR_CHARS, BRANCH_B_VISION,
+        )
+        return True
+    if mean_confidence is not None and mean_confidence < _MIN_OCR_MEAN_CONFIDENCE:
+        logger.warning(
+            "OCR fallback: mean confidence %.3f (<%.2f threshold) — likely garbled/"
+            "non-English text, rerouting page to %s",
+            mean_confidence, _MIN_OCR_MEAN_CONFIDENCE, BRANCH_B_VISION,
         )
         return True
     return False

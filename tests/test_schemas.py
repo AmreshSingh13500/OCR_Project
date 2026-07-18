@@ -1,7 +1,11 @@
 """
 [MODULE]   tests/test_schemas.py
 [TASK]     T1.2 — Auth & API endpoints
+           T8.1 — Generalized any-document extraction (additive contract update)
 [SUBTASKS] T1.2.2 ProcessRequest / ExtractedData / WebhookPayload per PRD §4.1-4.2
+           T8.1.1 AC: additive ExtractedData fields nullable + accept non-medical data;
+                  DocumentDetail requires field+value; field-set mirror test (T1.2.2's,
+                  unchanged) now covers the 9-key shape automatically
 [SUMMARY]  Unit tests for app/schemas.py's three contract models: field sets, required
            vs. optional split, and that a missing required field raises pydantic
            ValidationError (the mechanism FastAPI turns into a 422 at the route level,
@@ -9,8 +13,13 @@
            ExtractedData mirrors llm_extractor.py's EXTRACTED_DATA_JSON_SCHEMA (T4.1.1)
            field-for-field, since the two are intentionally separate definitions that
            must not drift apart.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.2
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.2, T8.1.1
 [HISTORY]  2026-07-17  T1.2.2  initial schema shape/validation tests
+           2026-07-18  T8.1.1  cover the 3 additive general-document fields +
+                                DocumentDetail validation
+           2026-07-19  T8.2.1  cover the additive original_language field (nullable
+                                default; field-set mirror test covers the 10-key shape
+                                automatically)
 """
 
 import pytest
@@ -58,6 +67,34 @@ def test_extracted_data_all_fields_default_to_none():
     assert data.procedure is None
     assert data.cost is None
     assert data.medicines is None
+    # [T8.1.1] additive general-document fields are nullable/optional too
+    assert data.document_type is None
+    assert data.document_summary is None
+    assert data.additional_details is None
+    # [T8.2.1] additive language field is nullable/optional too
+    assert data.original_language is None
+
+
+def test_extracted_data_accepts_general_document_fields():
+    """[T8.1.1] AC: the additive fields accept a non-medical document's data; additional_details items validate as {field, value}."""
+    data = ExtractedData(
+        document_type="passport",
+        document_summary="This is a passport belonging to Jane Doe. It carries her identity details.",
+        additional_details=[{"field": "Passport Number", "value": "N1234567"}],
+    )
+    assert data.document_type == "passport"
+    assert data.additional_details[0].field == "Passport Number"
+    assert data.additional_details[0].value == "N1234567"
+    # legacy medical fields untouched by the new ones
+    assert data.patient_name is None
+
+
+def test_document_detail_requires_field_and_value():
+    """[T8.1.1] AC: DocumentDetail mirrors the strict wire shape — both keys required."""
+    from app.schemas import DocumentDetail
+
+    with pytest.raises(ValidationError):
+        DocumentDetail(field="Passport Number")
 
 
 def test_extracted_data_field_set_matches_openai_structured_output_schema():

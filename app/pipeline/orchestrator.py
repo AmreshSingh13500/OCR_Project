@@ -3,7 +3,12 @@
 [TASK]     T4.3 — Pipeline orchestrator
            T1.2 — Auth & API endpoints
            T5.2 — Security hardening (app level)
-[SUBTASKS] T1.2.2 import ProcessRequest from app.schemas instead of a local duplicate
+           T8.1 — Generalized any-document extraction (additive contract update)
+           T8.2 — Multi-language documents + extraction fidelity (additive)
+[SUBTASKS] T8.1.3 success path sets error_message=ALL_FIELDS_NULL_MESSAGE when every
+                  extracted field is null (wires T4.1.5's signal into the webhook)
+           T8.2.2 thread OcrResult(text, mean_confidence) into the reroute decision
+           T1.2.2 import ProcessRequest from app.schemas instead of a local duplicate
            T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
                   wins any mixed-page case
@@ -37,7 +42,9 @@
            (T4.3.1) does Steps 2-5 and returns/raises;
            `run_pipeline()` (T4.3.4) wraps it in a top-level try/except so exactly one
            webhook call happens either way — the success branch builds a 'success'
-           payload from `_run_extraction()`'s result, the except branch maps whatever
+           payload from `_run_extraction()`'s result (setting error_message to T4.1.5's
+           frozen ALL_FIELDS_NULL_MESSAGE when every extracted field is null — the
+           unreadable-document signal, T8.1.3), the except branch maps whatever
            was raised via `map_exception_to_error_message()` (T4.3.3, the frozen
            7-exception -> error_message lookup from plan §4 T4.3.3's table, keyed by
            exact exception type — never isinstance — since those exception classes were
@@ -112,6 +119,18 @@
                                 error-string changes here (Rule 7 gate n/a — this only
                                 adds new log lines, no change to the webhook payload
                                 itself or any return value)
+           2026-07-18  T8.1.3  success path now sets error_message=ALL_FIELDS_NULL_MESSAGE
+                                (T4.1.5's existing frozen string, reused verbatim — no
+                                string edited/added) when is_all_fields_null() — closes
+                                the gap where T4.1.5 defined the signal but run_pipeline
+                                always sent error_message=None on success; Rule 7 gate
+                                checked: error_message was already a nullable key, its
+                                type/meaning unchanged, behavior matches plan §8-2's
+                                already-documented contract — additive/contract-safe
+           2026-07-19  T8.2.2  _extract_from_pages() consumes ocr_engine's new
+                                OcrResult and passes mean_confidence into
+                                should_reroute_to_vision() — internal refactor (Rule 7B),
+                                no payload-shape/error-string changes (Rule 7 gate n/a)
 """
 
 import logging
@@ -140,7 +159,13 @@ from app.pipeline.downloader import (
     download_file,
 )
 from app.pipeline.image_cleaner import clean_image
-from app.pipeline.llm_extractor import LLMError, extract_from_images, extract_from_text
+from app.pipeline.llm_extractor import (
+    ALL_FIELDS_NULL_MESSAGE,
+    LLMError,
+    extract_from_images,
+    extract_from_text,
+    is_all_fields_null,
+)
 from app.pipeline.pdf_handler import (
     CorruptFileError,
     PasswordProtectedError,
@@ -259,9 +284,12 @@ async def _extract_from_pages(
 
         if branch == BRANCH_A_PADDLEOCR:
             with _timed(timings, "step4b_ocr"):
-                text = await extract_text_async(cleaned.ocr_ready)
-            if not should_reroute_to_vision(text):
-                ocr_texts.append(text)
+                ocr_result = await extract_text_async(cleaned.ocr_ready)
+            # [T8.2.2] Reroute on low mean confidence too, not just low char count —
+            # garbled-but-long OCR output (non-English script, degraded print) must go
+            # to vision instead of feeding the LLM mangled text it would "correct".
+            if not should_reroute_to_vision(ocr_result.text, ocr_result.mean_confidence):
+                ocr_texts.append(ocr_result.text)
                 continue
 
         needs_vision = True
@@ -344,13 +372,22 @@ async def run_pipeline(req: ProcessRequest) -> None:
         )
     else:
         _log_extracted_data_privacy_safe(extracted_data)
+        # [T8.1.3] T4.1.5's unreadable-document signal, finally wired into the payload:
+        # every field null (incl. T8.1.1's document_type/summary/details — the T8.1.2
+        # prompt instructs all-null for unreadable documents) -> status stays "success"
+        # (Manual Review is Laravel's call, PRD §6.2) but error_message carries the
+        # frozen ALL_FIELDS_NULL_MESSAGE so Laravel can flag it. Any readable document
+        # has at least document_summary set -> error_message stays None.
+        all_null = is_all_fields_null(extracted_data)
+        if all_null:
+            logger.warning("All extracted fields null - flagging possible unreadable document")
         payload = build_webhook_payload(
             case_id=req.case_id,
             message_id=req.message_id,
             status="success",
             processing_path=processing_path,
             extracted_data=extracted_data,
-            error_message=None,
+            error_message=ALL_FIELDS_NULL_MESSAGE if all_null else None,
         )
 
     with _timed(timings, "step6_webhook"):

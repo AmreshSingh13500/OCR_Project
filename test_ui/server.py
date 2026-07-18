@@ -253,18 +253,21 @@ def _install_step_narration() -> None:
 
     async def extract_text_async(image):
         _plog.info("Step 4b — PaddleOCR (CPU) reading printed text…")
-        text = await _extract_text_async(image)
-        _plog.info("PaddleOCR extracted %d characters", len(text or ""))
-        return text
+        result = await _extract_text_async(image)
+        _plog.info(
+            "PaddleOCR extracted %d characters (mean confidence %.2f)",
+            len(result.text or ""), result.mean_confidence,
+        )
+        return result
 
     o.extract_text_async = extract_text_async
 
     _should_reroute = o.should_reroute_to_vision
 
-    def should_reroute_to_vision(text):
-        reroute = _should_reroute(text)
+    def should_reroute_to_vision(text, mean_confidence=None):
+        reroute = _should_reroute(text, mean_confidence)
         if reroute:
-            _plog.info("PaddleOCR yield too low → rerouting this page to OpenAI Vision")
+            _plog.info("OCR output too short or low-confidence → rerouting this page to OpenAI Vision")
         return reroute
 
     o.should_reroute_to_vision = should_reroute_to_vision

@@ -2,9 +2,12 @@
 [MODULE]   tests/test_ocr_engine.py
 [TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
            T5.1 — Test suite completion
+           T8.2 — Multi-language documents + extraction fidelity (additive)
 [SUBTASKS] T3.2.2 AC: printed_report.jpg -> non-empty text containing known fixture keywords
            T3.2.3 AC: concurrent calls don't crash or interleave results
            T3.2.4 AC: <20-char boundary cases for the vision-reroute rule
+           T8.2.2 AC: OcrResult carries mean confidence; <0.80 confidence boundary cases
+                  for the reroute quality gate (incl. None -> char rule only)
            T5.1.2 backfilled committed pytest coverage for T3.2 using T5.1.1's real
                   printed_report.jpg fixture (previously verified ad hoc, per SUBTASKS.md)
 [SUMMARY]  Loads the real PaddleOCR engine (cached locally from earlier manual
@@ -17,6 +20,8 @@
 [HISTORY]  2026-07-17  T5.1.2  initial committed test file using the real
                                 printed_report.jpg fixture (backfills T3.2's ad hoc
                                 verification)
+           2026-07-19  T8.2.2  adapt to OcrResult return shape; add confidence-gate
+                                boundary tests (0.10/0.79/0.80/0.95/None)
 """
 
 import asyncio
@@ -49,12 +54,14 @@ def _ocr_ready(name: str):
 
 
 def test_extract_text_printed_report_contains_known_keywords():
-    """[T3.2.2] AC: printed_report.jpg -> non-empty text containing known fixture keywords."""
-    text = extract_text(_ocr_ready("printed_report.jpg"))
+    """[T3.2.2] AC: printed_report.jpg -> non-empty text containing known fixture keywords.
+    [T8.2.2] extract_text now returns OcrResult; a clean printed fixture scores high mean confidence."""
+    result = extract_text(_ocr_ready("printed_report.jpg"))
 
-    assert text != ""
-    assert "LAB REPORT" in text
-    assert "John Smith" in text
+    assert result.text != ""
+    assert "LAB REPORT" in result.text
+    assert "John Smith" in result.text
+    assert result.mean_confidence > 0.8  # clean synthetic print -> confidently read
 
 
 @pytest.mark.asyncio
@@ -72,10 +79,10 @@ async def test_extract_text_async_concurrent_calls_do_not_interleave():
         extract_text_async(medicine_box_gray),
     )
 
-    assert "LAB REPORT" in results[0]
-    assert "PARACETAMOL" in results[1] or "ParaCure" in results[1]
-    assert "LAB REPORT" in results[2]
-    assert "PARACETAMOL" in results[3] or "ParaCure" in results[3]
+    assert "LAB REPORT" in results[0].text
+    assert "PARACETAMOL" in results[1].text or "ParaCure" in results[1].text
+    assert "LAB REPORT" in results[2].text
+    assert "PARACETAMOL" in results[3].text or "ParaCure" in results[3].text
 
 
 @pytest.mark.parametrize(
@@ -89,5 +96,21 @@ async def test_extract_text_async_concurrent_calls_do_not_interleave():
     ],
 )
 def test_should_reroute_to_vision_boundary(text, expected):
-    """[T3.2.4] AC: <20 characters reroutes to vision; >=20 is trusted as-is."""
+    """[T3.2.4] AC: <20 characters reroutes to vision; >=20 is trusted as-is (confidence omitted -> char rule only)."""
     assert should_reroute_to_vision(text) == expected
+
+
+@pytest.mark.parametrize(
+    "mean_confidence, expected",
+    [
+        (0.10, True),   # garbled — e.g. Arabic script read by the en-only engine
+        (0.79, True),   # just under the threshold -> reroute
+        (0.80, False),  # exactly at the threshold -> trusted
+        (0.95, False),  # clean print -> trusted
+        (None, False),  # confidence unknown -> char rule alone decides
+    ],
+)
+def test_should_reroute_to_vision_confidence_gate(mean_confidence, expected):
+    """[T8.2.2] AC: >=20 chars but mean confidence <0.80 reroutes to vision; >=0.80 or None is trusted."""
+    long_enough_text = "plenty of extracted characters here"
+    assert should_reroute_to_vision(long_enough_text, mean_confidence) == expected

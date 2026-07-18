@@ -1,7 +1,10 @@
 """
 [MODULE]   tests/test_pipeline_e2e.py
 [TASK]     T4.3 — Pipeline orchestrator
-[SUBTASKS] T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
+           T8.1 — Generalized any-document extraction (additive contract update)
+[SUBTASKS] T8.1.3 AC: all-null result -> success + ALL_FIELDS_NULL_MESSAGE; document-only
+                  result (e.g. passport) -> error_message stays None
+           T4.3.1 run_pipeline() wiring Steps 2->6; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
                   wins any mixed-page case
            T4.3.3 error mapping table — 7 exception -> error_message strings exactly
@@ -46,6 +49,13 @@
                                 'Internal processing error' + traceback logged
            2026-07-17  T4.3.5  add _StepTimings/_timed() unit tests plus run_pipeline()
                                 timing-log tests on both the success and error paths
+           2026-07-18  T8.1.3  add all-null->ALL_FIELDS_NULL_MESSAGE and passport-like
+                                (document fields only)->error_message None tests through
+                                run_pipeline()'s success path
+           2026-07-19  T8.2.2  adapt mocks to ocr_engine's new OcrResult return shape +
+                                two-arg should_reroute_to_vision (coverage of the
+                                confidence gate itself lives in test_ocr_engine.py);
+                                _all_null_extracted gains original_language (T8.2.1)
 """
 
 import io
@@ -58,7 +68,8 @@ import pytest
 from app.pipeline import orchestrator
 from app.pipeline.downloader import ContentKind, DownloadError, FileTooLargeError, UnsupportedFileError
 from app.pipeline.image_cleaner import CleanedImage
-from app.pipeline.llm_extractor import LLMError
+from app.pipeline.llm_extractor import ALL_FIELDS_NULL_MESSAGE, LLMError
+from app.pipeline.ocr_engine import OcrResult
 from app.pipeline.orchestrator import ProcessRequest, run_pipeline
 from app.pipeline.pdf_handler import CorruptFileError, PasswordProtectedError
 
@@ -127,8 +138,8 @@ async def test_run_pipeline_scanned_printed_page_uses_paddleocr_path(monkeypatch
     monkeypatch.setattr(orchestrator, "clean_image", lambda image, case_id=None: _fake_cleaned_image())
     monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
     monkeypatch.setattr(orchestrator, "route_branch", lambda label, conf: "paddleocr")
-    monkeypatch.setattr(orchestrator, "extract_text_async", _async_return("printed report text, plenty of characters"))
-    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text: False)
+    monkeypatch.setattr(orchestrator, "extract_text_async", _async_return(OcrResult(text="printed report text, plenty of characters", mean_confidence=0.95)))
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None: False)
     monkeypatch.setattr(
         orchestrator, "extract_from_text",
         lambda text: {"patient_name": None, "doctor_name": "Dr. Smith", "diagnosis": None,
@@ -191,8 +202,8 @@ async def test_run_pipeline_mixed_pages_one_vision_page_wins_vision_path(monkeyp
     monkeypatch.setattr(orchestrator, "clean_image", lambda image, case_id=None: _fake_cleaned_image())
     monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
     monkeypatch.setattr(orchestrator, "route_branch", _sequence_fn(["paddleocr", "vision_api"]))
-    monkeypatch.setattr(orchestrator, "extract_text_async", _async_return("first page ocr text, plenty long enough"))
-    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text: False)
+    monkeypatch.setattr(orchestrator, "extract_text_async", _async_return(OcrResult(text="first page ocr text, plenty long enough", mean_confidence=0.95)))
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None: False)
 
     def _fake_extract_from_images(images):
         captured_images.extend(images)
@@ -230,7 +241,10 @@ async def test_run_pipeline_mixed_pages_low_ocr_yield_reroute_wins_vision_path(m
     monkeypatch.setattr(orchestrator, "route_branch", lambda label, conf: "paddleocr")
     monkeypatch.setattr(
         orchestrator, "extract_text_async",
-        _sequence_async_fn(["plenty of readable text on this page", "x"]),
+        _sequence_async_fn([
+            OcrResult(text="plenty of readable text on this page", mean_confidence=0.95),
+            OcrResult(text="x", mean_confidence=0.95),
+        ]),
     )
     monkeypatch.setattr(orchestrator, "should_reroute_to_vision", _sequence_fn([False, True]))
 
@@ -270,9 +284,12 @@ async def test_run_pipeline_multi_page_all_paddleocr_stays_paddleocr_path(monkey
     monkeypatch.setattr(orchestrator, "route_branch", lambda label, conf: "paddleocr")
     monkeypatch.setattr(
         orchestrator, "extract_text_async",
-        _sequence_async_fn(["page one text long enough", "page two text long enough"]),
+        _sequence_async_fn([
+            OcrResult(text="page one text long enough", mean_confidence=0.95),
+            OcrResult(text="page two text long enough", mean_confidence=0.95),
+        ]),
     )
-    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text: False)
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None: False)
 
     def _fake_extract_from_text(text):
         captured_text["value"] = text
@@ -445,6 +462,64 @@ def test_map_exception_to_error_message_logs_traceback_for_unmapped_exception(ca
 
     assert message == "Internal processing error"
     assert any(record.exc_info for record in caplog.records)
+
+
+def _all_null_extracted() -> dict:
+    return {
+        "patient_name": None, "doctor_name": None, "diagnosis": None,
+        "procedure": None, "cost": None, "medicines": None,
+        "document_type": None, "document_summary": None, "additional_details": None,
+        "original_language": None,
+    }
+
+
+def _native_pdf_mocks(monkeypatch, extracted: dict, sink: list) -> None:
+    """Wires the minimal native-PDF happy path with a chosen extraction result."""
+    monkeypatch.setattr(orchestrator, "download_file", _async_return(io.BytesIO(b"%PDF-fake")))
+    monkeypatch.setattr(orchestrator, "detect_content_kind", lambda data: ContentKind.PDF)
+    monkeypatch.setattr(orchestrator, "open_pdf", lambda data: _FakeDoc(page_count=1))
+    monkeypatch.setattr(
+        orchestrator, "extract_native_text",
+        lambda doc: _NativeResult(text="a long native pdf text layer" * 10),
+    )
+    monkeypatch.setattr(orchestrator, "extract_from_text", lambda text: extracted)
+    monkeypatch.setattr(orchestrator, "send_webhook", _record_webhook(sink))
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_all_null_result_flags_unreadable_on_success(monkeypatch):
+    """[T8.1.3] AC: every extracted field null (incl. T8.1.1 keys) -> status stays 'success' but error_message carries ALL_FIELDS_NULL_MESSAGE."""
+    sent_payloads = []
+    _native_pdf_mocks(monkeypatch, _all_null_extracted(), sent_payloads)
+
+    await run_pipeline(ProcessRequest(case_id="case-null", message_id="msg-1", file_url="https://x/doc.pdf"))
+
+    assert len(sent_payloads) == 1
+    payload = sent_payloads[0]
+    assert payload["status"] == "success"
+    assert payload["processing_path"] == "native_pdf"
+    assert payload["error_message"] == ALL_FIELDS_NULL_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_general_document_fields_do_not_flag_unreadable(monkeypatch):
+    """[T8.1.3] AC: a non-medical document (medical fields null, T8.1.1 fields filled) -> error_message stays None."""
+    sent_payloads = []
+    extracted = dict(
+        _all_null_extracted(),
+        document_type="passport",
+        document_summary="This is a passport belonging to Jane Doe.",
+        additional_details=[{"field": "Passport Number", "value": "N1234567"}],
+    )
+    _native_pdf_mocks(monkeypatch, extracted, sent_payloads)
+
+    await run_pipeline(ProcessRequest(case_id="case-pass", message_id="msg-2", file_url="https://x/doc.pdf"))
+
+    assert len(sent_payloads) == 1
+    payload = sent_payloads[0]
+    assert payload["status"] == "success"
+    assert payload["error_message"] is None
+    assert payload["extracted_data"]["document_type"] == "passport"
 
 
 # --- test helpers -----------------------------------------------------------------

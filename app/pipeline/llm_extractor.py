@@ -1,18 +1,33 @@
 """
 [MODULE]   app/pipeline/llm_extractor.py
 [TASK]     T4.1 — OpenAI structured extraction (Step 5)
+           T8.1 — Generalized any-document extraction (additive contract update)
+           T8.2 — Multi-language documents + extraction fidelity (additive)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
            T4.1.3 Vision path: <=3 base64 JPEGs (quality 85, longest side 1536px)
            T4.1.4 Tenacity retries: 3 attempts, exp backoff 2-30s, retryable errors only
            T4.1.5 All-fields-null flag -> success + informative error_message (PRD clarification #2)
            T4.1.6 Log prompt/completion token usage per call
+           T8.1.1 additive schema keys: document_type / document_summary / additional_details
+           T8.1.2 generalized any-document extraction prompt (text + vision share it)
+           T8.2.1 additive original_language key + English-output/transliteration prompt rules
+           T8.2.3 verbatim-transcription prompt rules + vision detail:"high"
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
-           ExtractedData shape (patient_name, doctor_name, diagnosis, procedure, cost,
-           medicines) so gpt-4o-mini can never return a malformed or partial payload —
-           every field is nullable, so "not found in the document" is expressed as
-           null, never a missing key or a guessed value. `cost` is a contract addition
+           ExtractedData shape — the 6 original medical keys (patient_name, doctor_name,
+           diagnosis, procedure, cost, medicines) plus the additive T8.1.1 keys
+           (document_type, document_summary, additional_details) and T8.2.1's
+           original_language, which together let the service handle ANY document kind
+           (passport, invoice, medicine box, ...) in ANY language (Arabic, mixed, ...):
+           what the document is, its original language, a properly written English
+           summary, and every other readable detail as {field, value} pairs — all
+           values output in English (content translated; proper names transliterated
+           exactly, per the T8.2.1/T8.2.3 prompt rules that also forbid correcting or
+           inferring names/numbers). Every field is nullable, so "not found in the
+           document" is expressed as null, never a missing key or a guessed value; an
+           unreadable document returns null for every field including the additive
+           ones, preserving T4.1.5's all-null unreadable signal. `cost` is a contract addition
            beyond the PRD §4.2 sample (PRD clarification #1, IMPLEMENTATION_PLAN.md
            §8-1); Laravel must tolerate the extra key. `extract_from_text()` sends
            native-PDF text (T2.1) or PaddleOCR output (T3.2) through a single chat
@@ -60,6 +75,29 @@
            2026-07-17  T4.1.6  add token-usage logging in _call_chat_completion(); no
                                 schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a) — logging-only addition
+           2026-07-18  T8.1.1  add document_type/document_summary/additional_details to
+                                EXTRACTED_DATA_JSON_SCHEMA — Rule 7 gate checked: 3 new
+                                nullable keys, existing 6 keys byte-identical, no rename/
+                                remove/retype — additive, contract-safe (same precedent
+                                as `cost`); schema name constant renamed to
+                                "extracted_document_data" (OpenAI-internal label only,
+                                never seen by Laravel)
+           2026-07-18  T8.1.2  replace _EXTRACTION_SYSTEM_PROMPT with the generalized
+                                any-document prompt (both paths share it unchanged);
+                                prompt wording is internal (plan T7.2.2 explicitly
+                                allows tuning) — no contract surface touched; unreadable
+                                documents instructed to return all-null incl. the new
+                                keys so T4.1.5's signal keeps working
+           2026-07-19  T8.2.1  add original_language to EXTRACTED_DATA_JSON_SCHEMA —
+                                Rule 7 gate checked: 1 new nullable key, existing 9
+                                byte-identical, additive/contract-safe (same precedent
+                                as cost/T8.1.1); prompt gains language rules (detect,
+                                report, output English, transliterate names exactly)
+           2026-07-19  T8.2.3  prompt gains verbatim-transcription accuracy rules
+                                (never correct/expand/infer names; unclear ->
+                                null, not a guess); vision image_url items now send
+                                detail:"high" (cost bounded by T4.1.3's 1536px
+                                downscale) — internal request param, no contract surface
 """
 
 import base64
@@ -86,12 +124,61 @@ class LLMError(Exception):
 # without needing a lifespan hook since there's no model weights to warm up.
 _client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
-# [T4.1.2] Exact wording from IMPLEMENTATION_PLAN.md §4 T4.1.2 — frozen for this subtask;
-# tuning happens in T7.2, not here.
+# [T8.1.2] Generalized any-document prompt, replacing T4.1.2's medical-only wording
+# (prompt text is internal — plan T7.2.2 explicitly allows tuning it; the schema is the
+# contract, not the prompt). The final paragraph is load-bearing: instructing all-null
+# for unreadable documents (INCLUDING the new T8.1.1 keys) is what keeps T4.1.5's
+# all-fields-null unreadable signal working now that a summary would otherwise almost
+# always be non-null.
+# [T8.2.1] Language rules: any-language documents, original_language reported, every
+# value output in English (translate content, transliterate proper names exactly).
+# [T8.2.3] Fidelity rules: verbatim transcription of names/numbers/IDs, no correcting/
+# expanding/inferring, unclear -> null (or only the legible part) — never a plausible
+# guess. Directly targets the observed wrong-doctor-name fabrication.
 _EXTRACTION_SYSTEM_PROMPT = (
-    "Extract Patient Name, Doctor Name, Diagnosis, Procedure, and Cost from this "
-    "medical document. Return null for any field not present. Do not guess or "
-    "fabricate values."
+    "You are a document information extraction system. The document may be of ANY kind: "
+    "medical (lab report, prescription, medicine box, ultrasound or radiology scan, "
+    "bill) or non-medical (passport, ID card, invoice, certificate, letter, form, etc.), "
+    "and may be written in ANY language (English, Arabic, Kurdish, mixed, ...).\n"
+    "\n"
+    "Language rules:\n"
+    "- original_language: name the language(s) the document is written in, e.g. "
+    '"English", "Arabic", "Arabic and English".\n'
+    "- Report EVERY extracted value in English: translate non-English content "
+    "faithfully.\n"
+    "- Proper names (people, doctors, clinics, brands, places) are transliterated into "
+    "Latin script exactly as written — never translated, never replaced with a "
+    "similar-sounding or more common name.\n"
+    "\n"
+    "Accuracy rules (critical):\n"
+    "- Transcribe names, numbers, dates, and identifiers EXACTLY as they appear, "
+    "character by character. Do not correct spelling, expand abbreviations, reorder "
+    "words, or \"fix\" anything that looks unusual.\n"
+    "- Never guess or fabricate a value. If a value is unclear or only partially "
+    "legible, return null for that field, or only the clearly legible part — never a "
+    "plausible-looking guess.\n"
+    "\n"
+    "Fill every field of the response schema as follows:\n"
+    "1. document_type: a short label naming what kind of document this is, e.g. "
+    '"lab report", "handwritten prescription", "medicine box", "ultrasound scan", '
+    '"passport", "invoice".\n'
+    "2. document_summary: 2-4 complete, properly written English sentences: state what "
+    "the document is and the key information it carries, e.g. \"This is a passport "
+    'issued by ... belonging to ... It carries ..."\n'
+    "3. patient_name, doctor_name, diagnosis, procedure, cost, medicines: fill each one "
+    "when that information is present on the document; return null for any that are "
+    "absent (for non-medical documents these will usually all be null).\n"
+    "4. additional_details: every other piece of information readable on the document "
+    "that is not already captured in the fields above, as {\"field\": <label>, "
+    "\"value\": <value>} pairs — identification numbers, dates, names, addresses, "
+    "nationalities, test results, dosages, amounts, issuing authorities, etc. Return "
+    "null if there is nothing beyond the fields above.\n"
+    "5. original_language: as described in the language rules.\n"
+    "\n"
+    "Never guess or fabricate values; report only what is actually readable. If the "
+    "document is unreadable (blurry, blank, or too degraded), return null for EVERY "
+    "field, including document_type, document_summary, additional_details, and "
+    "original_language."
 )
 
 # [T4.1.3] Per plan §4 T4.1.3 exactly — bounds vision token cost/latency.
@@ -109,7 +196,7 @@ _RETRYABLE_OPENAI_ERRORS = (
     openai.InternalServerError,
 )
 
-EXTRACTED_DATA_SCHEMA_NAME = "extracted_medical_data"
+EXTRACTED_DATA_SCHEMA_NAME = "extracted_document_data"
 
 # [T4.1.1] Strict JSON Schema for OpenAI Structured Outputs, mirroring the ExtractedData
 # model that schemas.py (T1.2.2) will define. OpenAI's strict mode has no concept of an
@@ -128,6 +215,28 @@ EXTRACTED_DATA_JSON_SCHEMA = {
             "type": ["array", "null"],
             "items": {"type": "string"},
         },
+        # [T8.1.1] Additive general-document keys (Rule 7: the 6 keys above are frozen
+        # and byte-identical; these 3 are new optional/nullable keys, same precedent as
+        # `cost`). additional_details is an array of {field, value} string pairs rather
+        # than a free-form object because strict mode forbids open objects
+        # (additionalProperties must be False, so arbitrary keys can't be expressed).
+        "document_type": {"type": ["string", "null"]},
+        "document_summary": {"type": ["string", "null"]},
+        "additional_details": {
+            "type": ["array", "null"],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "value": {"type": "string"},
+                },
+                "required": ["field", "value"],
+                "additionalProperties": False,
+            },
+        },
+        # [T8.2.1] Additive (Rule 7, same precedent): the language(s) the original
+        # document is written in; extracted values themselves are always English.
+        "original_language": {"type": ["string", "null"]},
     },
     "required": [
         "patient_name",
@@ -136,6 +245,10 @@ EXTRACTED_DATA_JSON_SCHEMA = {
         "procedure",
         "cost",
         "medicines",
+        "document_type",
+        "document_summary",
+        "additional_details",
+        "original_language",
     ],
     "additionalProperties": False,
 }
@@ -188,8 +301,14 @@ def _encode_image_base64_jpeg(image: np.ndarray) -> str:
 # `vision_ready` images instead of raw text. Truncates defensively to MAX_PDF_PAGES_OCR
 # even though the orchestrator (T4.3) is expected to already cap page count upstream.
 def extract_from_images(images: list[np.ndarray]) -> dict:
+    # [T8.2.3] detail:"high" — document text (names, dosages, IDs) is exactly what the
+    # default/low detail modes misread; token cost stays bounded because T4.1.3 already
+    # downscales every image to a 1536px longest side before encoding.
     content = [
-        {"type": "image_url", "image_url": {"url": _encode_image_base64_jpeg(image)}}
+        {
+            "type": "image_url",
+            "image_url": {"url": _encode_image_base64_jpeg(image), "detail": "high"},
+        }
         for image in images[:MAX_PDF_PAGES_OCR]
     ]
     messages = [
@@ -245,7 +364,10 @@ ALL_FIELDS_NULL_MESSAGE = "All fields empty - possible unreadable document"
 
 
 # [T4.1.5] extracted_data is the dict returned by extract_from_text()/extract_from_images(),
-# always exactly the 6 ExtractedData keys (strict schema, T4.1.1) — "all null" means the
-# model found nothing at all, the signal for a blurry/unreadable document.
+# always exactly the ExtractedData key set (strict schema, T4.1.1 + T8.1.1's additions —
+# this iterates whatever keys are present, so it covers the 9-key shape automatically) —
+# "all null" means the model found nothing at all, the signal for a blurry/unreadable
+# document. The T8.1.2 prompt explicitly instructs all-null (including document_summary)
+# for unreadable documents, so this signal stays meaningful for any document kind.
 def is_all_fields_null(extracted_data: dict) -> bool:
     return all(value is None for value in extracted_data.values())

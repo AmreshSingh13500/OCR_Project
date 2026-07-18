@@ -1,7 +1,12 @@
 """
 [MODULE]   app/schemas.py
 [TASK]     T1.2 — Auth & API endpoints
+           T8.1 — Generalized any-document extraction (additive contract update)
+           T8.2 — Multi-language documents + extraction fidelity (additive)
 [SUBTASKS] T1.2.2 ProcessRequest / ExtractedData / WebhookPayload per PRD §4.1-4.2
+           T8.1.1 additive ExtractedData keys: document_type / document_summary /
+                  additional_details (+ DocumentDetail item model)
+           T8.2.1 additive ExtractedData key: original_language
 [SUMMARY]  Canonical Pydantic contract models for the HTTP surface. `ProcessRequest` is
            the POST /api/v1/process request body (PRD §4.1); FastAPI validates incoming
            JSON against it automatically, returning 422 on a malformed body (T1.2.3's
@@ -21,8 +26,19 @@
            repository layout, and is available for validation/documentation use going
            forward. `status`/`processing_path` use `Literal` types to make the frozen
            value sets (CODING_RULES.md Rule 7) explicit in code, not just in a comment.
-[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.2
+[PLAN]     IMPLEMENTATION_PLAN.md §4 → T1.2.2, T8.1.1
 [HISTORY]  2026-07-17  T1.2.2  initial ProcessRequest/ExtractedData/WebhookPayload models
+           2026-07-18  T8.1.1  add document_type/document_summary/additional_details to
+                                ExtractedData (+ new DocumentDetail item model) — Rule 7
+                                gate checked: 3 new optional nullable keys, existing 6
+                                fields untouched, no rename/remove/retype — additive,
+                                contract-safe (same precedent as `cost`); mirrors
+                                llm_extractor.py's EXTRACTED_DATA_JSON_SCHEMA which
+                                gained the same keys in the same session
+           2026-07-19  T8.2.1  add original_language — Rule 7 gate checked: 1 new
+                                optional nullable key, existing 9 untouched — additive,
+                                contract-safe; mirrors EXTRACTED_DATA_JSON_SCHEMA which
+                                gained the same key in the same session
 """
 
 from typing import Literal, Optional
@@ -43,9 +59,19 @@ class ProcessRequest(BaseModel):
     source_channel: Optional[str] = None
 
 
-# [T1.2.2] Mirrors llm_extractor.py's EXTRACTED_DATA_JSON_SCHEMA (T4.1.1) exactly: same
-# 6 fields, all nullable. `cost` is a contract addition beyond the PRD §4.2 sample (PRD
-# clarification #1) — Laravel must tolerate the extra key.
+# [T8.1.1] One {field, value} entry of ExtractedData.additional_details — a list of
+# these (not a free-form dict) because OpenAI strict mode can't express open objects;
+# schemas.py mirrors that wire shape exactly.
+class DocumentDetail(BaseModel):
+    field: str
+    value: str
+
+
+# [T1.2.2] Mirrors llm_extractor.py's EXTRACTED_DATA_JSON_SCHEMA (T4.1.1) exactly: the
+# original 6 fields plus T8.1.1's 3 general-document fields, all nullable. `cost` is a
+# contract addition beyond the PRD §4.2 sample (PRD clarification #1) — Laravel must
+# tolerate the extra key; document_type/document_summary/additional_details follow the
+# same additive precedent (T8.1.1).
 class ExtractedData(BaseModel):
     patient_name: Optional[str] = None
     doctor_name: Optional[str] = None
@@ -53,6 +79,14 @@ class ExtractedData(BaseModel):
     procedure: Optional[str] = None
     cost: Optional[str] = None
     medicines: Optional[list[str]] = None
+    # [T8.1.1] Additive general-document keys — what the document is, a properly written
+    # summary, and every other readable detail as {field, value} pairs.
+    document_type: Optional[str] = None
+    document_summary: Optional[str] = None
+    additional_details: Optional[list[DocumentDetail]] = None
+    # [T8.2.1] Additive: the language(s) the original document is written in (e.g.
+    # "Arabic", "Arabic and English"); all extracted values themselves are English.
+    original_language: Optional[str] = None
 
 
 # [T1.2.2] Mirrors webhook_client.py's build_webhook_payload() (T4.2.1) key set exactly.
