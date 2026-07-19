@@ -312,8 +312,8 @@ async def _extract_from_pages(
     # [T4.3.2] processing_path per plan §4 T4.3.2 exactly: 'paddleocr' only when every
     # page's OCR output was trusted; 'vision_api' wins the instant any single page needed
     # vision (originally routed there, or rerouted after a low-yield OCR result) — a
-    # mixed-page document is never reported as 'paddleocr'. All pages' vision_ready
-    # images are sent together in that case, since extract_from_text/extract_from_images
+    # mixed-page document is never reported as 'paddleocr'. All pages' original images
+    # (T8.3.1) are sent together in that case, since extract_from_text/extract_from_images
     # are mutually exclusive (no single call can mix raw text and images).
     with _timed(timings, "step5_llm"):
         if needs_vision:

@@ -6,7 +6,7 @@
            T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
-           T4.1.3 Vision path: <=3 base64 JPEGs (quality 85, longest side 1536px)
+           T4.1.3 Vision path: <=3 base64 JPEGs (downscale cap + quality now per T8.3.2)
            T4.1.4 Tenacity retries: 3 attempts, exp backoff 2-30s, retryable errors only
            T4.1.5 All-fields-null flag -> success + informative error_message (PRD clarification #2)
            T4.1.6 Log prompt/completion token usage per call
@@ -35,8 +35,9 @@
            §8-1); Laravel must tolerate the extra key. `extract_from_text()` sends
            native-PDF text (T2.1) or PaddleOCR output (T3.2) through a single chat
            completion using the frozen system prompt; `extract_from_images()` sends up
-           to MAX_PDF_PAGES_OCR `vision_ready` images (T2.2), each downscaled to a 1536px
-           longest side and JPEG-encoded at quality 85 to control token cost, through the
+           to MAX_PDF_PAGES_OCR page images — since T8.3.1 the orchestrator hands over
+           the ORIGINAL color photos, not the cleaned grayscale — each downscaled to a
+           2048px longest side and JPEG-encoded at quality 90 (T8.3.2), through the
            same schema and system prompt. Both paths funnel through `_call_chat_completion()`,
            which retries transient OpenAI failures (timeout, connection, rate limit, 5xx)
            up to `OPENAI_MAX_RETRIES` times with exponential backoff (2-30s) and raises
@@ -315,8 +316,10 @@ def _vision_model() -> str:
     return settings.OPENAI_VISION_MODEL or settings.OPENAI_MODEL
 
 
-# Downscales only when needed (never upscales a smaller image) and re-encodes as JPEG —
-# grayscale is a valid single-component JPEG, no RGB conversion needed for the vision API.
+# Downscales only when needed (never upscales a smaller image) and re-encodes as JPEG.
+# Handles both the original BGR color images the orchestrator sends since T8.3.1 (cv2
+# encodes 3-channel BGR as a standard color JPEG) and single-channel grayscale (a valid
+# single-component JPEG) — no conversion needed for the vision API in either case.
 def _encode_image_base64_jpeg(image: np.ndarray) -> str:
     h, w = image.shape[:2]
     longest_side = max(h, w)
@@ -336,12 +339,13 @@ def _encode_image_base64_jpeg(image: np.ndarray) -> str:
 
 # [T4.1.3] Vision path (Branch B / handwritten, scans, medicine boxes) — same schema and
 # system prompt as the text path, but the user turn carries up to MAX_PDF_PAGES_OCR
-# `vision_ready` images instead of raw text. Truncates defensively to MAX_PDF_PAGES_OCR
+# page images instead of raw text (since T8.3.1 the orchestrator passes the original
+# color images, not the cleaned grayscale). Truncates defensively to MAX_PDF_PAGES_OCR
 # even though the orchestrator (T4.3) is expected to already cap page count upstream.
 def extract_from_images(images: list[np.ndarray]) -> dict:
     # [T8.2.3] detail:"high" — document text (names, dosages, IDs) is exactly what the
-    # default/low detail modes misread; token cost stays bounded because T4.1.3 already
-    # downscales every image to a 1536px longest side before encoding.
+    # default/low detail modes misread; token cost stays bounded because every image is
+    # downscaled to a 2048px longest side (T8.3.2) before encoding.
     content = [
         {
             "type": "image_url",

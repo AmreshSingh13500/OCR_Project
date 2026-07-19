@@ -8,9 +8,12 @@
            T2.2.5 DEBUG_SAVE_IMAGES dumps each stage to scratch dir with case_id prefix
 [SUMMARY]  Deterministic image-cleaning pipeline for Step 3: `clean_image()` runs
            grayscale → deskew → CLAHE → adaptive threshold, returning a `CleanedImage`
-           with both an OCR-ready binary image and the pre-threshold CLAHE grayscale
-           "vision_ready" image for the LLM vision path (binarization destroys detail the
-           vision model needs). Runs on in-memory numpy arrays only, never touches disk
+           with both an OCR-ready binary image (PaddleOCR, Branch A) and the
+           pre-threshold CLAHE grayscale "vision_ready" image. Since T8.3.1,
+           vision_ready's consumer is CLIP classification (T3.1.4) only — the LLM vision
+           path receives the ORIGINAL color image from the orchestrator instead, because
+           this cleaning (built for OCR) degrades what a vision LLM reads best. Runs on
+           in-memory numpy arrays only, never touches disk
            unless `DEBUG_SAVE_IMAGES=true`, in which case each stage is written to the
            gitignored `debug_images/` scratch dir prefixed with the caller's `case_id`
            (T2.2.5) — a no-op otherwise. `deskew()` estimates the skew angle from
@@ -28,6 +31,10 @@
            2026-07-17  T2.2.5  DEBUG_SAVE_IMAGES per-stage dump; clean_image() gained
                                 optional case_id param — internal signature, no external
                                 contract, additive default so existing callers are unaffected
+           2026-07-19  (doc)   T8.3.1 changed vision_ready's consumer: the orchestrator
+                                now sends the ORIGINAL color image to the LLM vision path;
+                                vision_ready feeds CLIP classification only. No code
+                                change in this file — header/comments synced to match
 """
 
 from dataclasses import dataclass
@@ -142,8 +149,8 @@ def _debug_save_stage(case_id: Optional[str], stage: str, image: np.ndarray) -> 
 
 # [T2.2.4] Full Step-3 pipeline: grayscale → deskew → CLAHE → adaptive threshold.
 # ocr_ready is the binarized output (PaddleOCR, Branch A); vision_ready is the
-# pre-threshold CLAHE grayscale (LLM vision path, Branch B) — binarizing would destroy
-# detail the vision model needs, so that image is deliberately never thresholded.
+# pre-threshold CLAHE grayscale — since T8.3.1 consumed by CLIP classification (T3.1.4)
+# only, the LLM vision path gets the original color image from the orchestrator.
 # [T2.2.5] case_id is optional (defaults to None → "unknown" prefix) since the pipeline
 # orchestrator that owns per-request case IDs (T4.3) doesn't exist yet; it's only ever
 # used to name debug dumps, never to change cleaning behavior.

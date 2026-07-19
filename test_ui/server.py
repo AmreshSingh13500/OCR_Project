@@ -283,7 +283,11 @@ def _install_step_narration() -> None:
     _from_images = o.extract_from_images
 
     def extract_from_images(images):
-        _plog.info("Step 5 — OpenAI %s structured extraction (VISION path, base64 images)…", settings.OPENAI_MODEL)
+        vision_model = settings.OPENAI_VISION_MODEL or settings.OPENAI_MODEL
+        _plog.info(
+            "Step 5 — OpenAI %s structured extraction (VISION path, %d image(s), detail=high)…",
+            vision_model, len(images),
+        )
         return _from_images(images)
 
     o.extract_from_images = extract_from_images
