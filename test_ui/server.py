@@ -267,7 +267,7 @@ def _install_step_narration() -> None:
     def should_reroute_to_vision(text, mean_confidence=None):
         reroute = _should_reroute(text, mean_confidence)
         if reroute:
-            _plog.info("OCR output too short or low-confidence → rerouting this page to OpenAI Vision")
+            _plog.info("OCR output too short / low-confidence / non-English → rerouting this page to OpenAI Vision")
         return reroute
 
     o.should_reroute_to_vision = should_reroute_to_vision

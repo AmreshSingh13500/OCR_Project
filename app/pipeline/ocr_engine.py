@@ -2,11 +2,13 @@
 [MODULE]   app/pipeline/ocr_engine.py
 [TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
            T8.2 — Multi-language documents + extraction fidelity (additive)
+           T8.4 — Non-English field values in English + explicit OCR non-English detect
 [SUBTASKS] T3.2.1 initialize PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False) once at startup
            T3.2.2 extract_text(): OCR ocr_ready image, join lines top-to-bottom, log confidence
            T3.2.3 extract_text_async(): asyncio.Lock + run_in_executor thread-safety guard
            T3.2.4 should_reroute_to_vision(): <20-char fallback rule, logs the reroute
            T8.2.2 OcrResult(text, mean_confidence) + <0.80 mean-confidence reroute rule
+           T8.4.2 should_reroute_to_vision(): non-Latin-script reroute (use vision to translate)
 [SUMMARY]  Local CPU OCR engine for Branch A (printed documents). `load_paddleocr()`
            initializes a single PaddleOCR instance at app startup (lifespan) — angle
            classification on (photographed documents may be slightly rotated), English,
@@ -54,10 +56,15 @@
                                 refactor only (Rule 7B, full suite re-verified green);
                                 no schemas.py/routes.py/webhook_client.py/error-string
                                 changes (Rule 7 gate n/a)
+           2026-07-19  T8.4.2  add _non_latin_letter_ratio() + a third reroute trigger in
+                                should_reroute_to_vision() (>10% non-Latin script ->
+                                vision). Signature unchanged (backward compatible);
+                                internal refactor only (Rule 7B), no contract surface
 """
 
 import asyncio
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
@@ -67,6 +74,12 @@ from paddleocr import PaddleOCR
 from app.config import BRANCH_B_VISION
 
 logger = logging.getLogger(__name__)
+
+# [T8.4.2] Above this share of non-Latin alphabetic characters in the OCR output, the
+# page contains meaningful non-English (Arabic/Kurdish/…) script — route it to vision,
+# which reads any language and (per the T8.4.1 prompt) returns accurate English. Small
+# so a stray non-Latin glyph in an otherwise-English page doesn't trip it.
+_MAX_NON_LATIN_RATIO = 0.10
 
 # [T3.2.4] Per plan §4 T3.2.4 exactly — below this many characters, PaddleOCR likely
 # failed to read the page (blank, garbled, or misrouted) and vision is the safer bet.
@@ -167,6 +180,24 @@ async def extract_text_async(ocr_ready: np.ndarray) -> OcrResult:
         return await loop.run_in_executor(None, extract_text, ocr_ready)
 
 
+# [T8.4.2] Share of alphabetic characters that are NOT Latin script — the explicit
+# "OCR saw non-English text" signal. Non-alphabetic characters (digits, punctuation,
+# whitespace) are ignored so a numbers-heavy English page isn't misjudged. A character
+# with no Unicode name (rare control/private-use) counts as non-Latin (conservative).
+def _non_latin_letter_ratio(text: str) -> float:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return 0.0
+    non_latin = 0
+    for ch in letters:
+        try:
+            if "LATIN" not in unicodedata.name(ch):
+                non_latin += 1
+        except ValueError:
+            non_latin += 1
+    return non_latin / len(letters)
+
+
 # [T3.2.4] Per plan §4 T3.2.4 exactly (char rule). Doesn't perform the reroute itself —
 # the orchestrator (T4.3) owns branch dispatch — just answers the question and logs when
 # the answer is yes, so the reroute is visible in the logs even before T4.3 exists.
@@ -174,11 +205,19 @@ async def extract_text_async(ocr_ready: np.ndarray) -> OcrResult:
 # the quality gate: long-but-garbled output — an Arabic/foreign-script page read by this
 # en-only engine, or a badly degraded print — passes the char count but must not be
 # trusted, or the LLM downstream plausibilizes wrong values from mangled text.
+# [T8.4.2] A third trigger: if the OCR text itself contains meaningful non-Latin script
+# (the user's "if OCR detects non-English, use vision for accurate translation"),
+# reroute so vision reads it and returns accurate English (T8.4.1 prompt). NOTE: this
+# en-only PaddleOCR rarely emits non-Latin characters — for a foreign-script page the
+# confidence gate above is the practical trigger; this check is the explicit, correct,
+# and forward-compatible signal (fires immediately if the engine is ever made
+# multilingual, and catches any non-Latin the recognizer does emit).
 def should_reroute_to_vision(text: str, mean_confidence: Optional[float] = None) -> bool:
     """
     True when a Branch-A page's OCR output should be rerouted to Branch B (vision):
-    <20 chars (T3.2.4's fallback rule), or mean recognition confidence below 0.80
-    (T8.2.2's quality gate — skipped when mean_confidence is None).
+    <20 chars (T3.2.4's fallback rule), mean recognition confidence below 0.80
+    (T8.2.2's quality gate — skipped when mean_confidence is None), or the text is
+    substantially non-Latin script (T8.4.2 — use vision for accurate translation).
     """
     if len(text) < _MIN_OCR_CHARS:
         logger.warning(
@@ -191,6 +230,14 @@ def should_reroute_to_vision(text: str, mean_confidence: Optional[float] = None)
             "OCR fallback: mean confidence %.3f (<%.2f threshold) — likely garbled/"
             "non-English text, rerouting page to %s",
             mean_confidence, _MIN_OCR_MEAN_CONFIDENCE, BRANCH_B_VISION,
+        )
+        return True
+    non_latin_ratio = _non_latin_letter_ratio(text)
+    if non_latin_ratio > _MAX_NON_LATIN_RATIO:
+        logger.warning(
+            "OCR fallback: %.0f%% non-Latin script detected (>%.0f%% threshold) — "
+            "rerouting page to %s for accurate translation",
+            non_latin_ratio * 100, _MAX_NON_LATIN_RATIO * 100, BRANCH_B_VISION,
         )
         return True
     return False

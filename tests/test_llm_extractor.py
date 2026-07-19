@@ -5,7 +5,10 @@
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
            T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
-[SUBTASKS] T8.3.2 AC: prompt carries MRZ-authoritative + completeness rules; vision
+           T8.4 — Non-English field values forced to English (prompt fix)
+[SUBTASKS] T8.4.1 AC: prompt forces English/Latin for EVERY field (incl. patient_name),
+                  with a transliteration example; accuracy scoped to content not script
+           T8.3.2 AC: prompt carries MRZ-authoritative + completeness rules; vision
                   downscale cap is 2048px
            T8.3.3 AC: vision path uses OPENAI_VISION_MODEL when set, falls back to
                   OPENAI_MODEL when unset; text path always OPENAI_MODEL
@@ -53,6 +56,10 @@
                                 prompt-rule test + 2048-cap test
            2026-07-19  T8.3.3  per-path model tests (vision uses OPENAI_VISION_MODEL when
                                 set; falls back to OPENAI_MODEL when unset)
+           2026-07-19  T8.4.1  test that the prompt forces English/Latin for every field
+                                (incl. patient_name) with a transliteration example; the
+                                T8.2.1 prompt test updated to the reworded transliteration
+                                wording
 """
 
 import json
@@ -326,9 +333,21 @@ def test_prompt_contains_language_and_verbatim_accuracy_rules():
     prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
     assert "original_language" in prompt
     assert "English" in prompt
-    assert "transliterated" in prompt
+    assert "Transliterate" in prompt
     assert "EXACTLY" in prompt  # verbatim transcription rule
     assert "Never guess or fabricate" in prompt
+
+
+def test_prompt_forces_english_latin_for_every_field():
+    """[T8.4.1] AC: prompt states the English/Latin output rule applies to EVERY field (incl. patient_name), with a transliteration example, so a field never comes back in Arabic while the summary is English."""
+    prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    assert "EVERY field" in prompt
+    assert "patient_name" in prompt
+    assert "Latin alphabet" in prompt
+    # the worked transliteration example (Arabic -> Latin) must be present
+    assert "Mohammed Abdullah" in prompt
+    # accuracy is explicitly scoped to CONTENT, not script (the conflict that caused the bug)
+    assert "CONTENT" in prompt
 
 
 def test_vision_images_are_sent_with_high_detail(monkeypatch):

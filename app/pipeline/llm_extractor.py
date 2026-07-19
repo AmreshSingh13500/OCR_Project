@@ -4,6 +4,7 @@
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
            T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
+           T8.4 — Non-English field values forced to English (prompt fix)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
            T4.1.3 Vision path: <=3 base64 JPEGs (downscale cap + quality now per T8.3.2)
@@ -16,6 +17,7 @@
            T8.2.3 verbatim-transcription prompt rules + vision detail:"high"
            T8.3.2 vision resolution 2048px/quality 90 + MRZ-authoritative & completeness prompt rules
            T8.3.3 optional OPENAI_VISION_MODEL — stronger model for the vision path only
+           T8.4.1 prompt: ALL field values forced to English/Latin (fixes Arabic patient_name)
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape — the 6 original medical keys (patient_name, doctor_name,
@@ -149,25 +151,37 @@ _client = OpenAI(api_key=settings.OPENAI_API_KEY)
 # [T8.2.3] Fidelity rules: verbatim transcription of names/numbers/IDs, no correcting/
 # expanding/inferring, unclear -> null (or only the legible part) — never a plausible
 # guess. Directly targets the observed wrong-doctor-name fabrication.
+# [T8.4.1] The language rules and the accuracy rules were reworded to resolve a conflict
+# that made the model return e.g. an Arabic patient_name while writing the summary in
+# English: "output in English/Latin" now explicitly applies to EVERY field, and the
+# "transcribe exactly" fidelity rule is scoped to CONTENT (don't invent/change), not to
+# the script — names/words are always transliterated/translated into Latin/English.
 _EXTRACTION_SYSTEM_PROMPT = (
     "You are a document information extraction system. The document may be of ANY kind: "
     "medical (lab report, prescription, medicine box, ultrasound or radiology scan, "
     "bill) or non-medical (passport, ID card, invoice, certificate, letter, form, etc.), "
     "and may be written in ANY language (English, Arabic, Kurdish, mixed, ...).\n"
     "\n"
-    "Language rules:\n"
+    "Language rules (these apply to EVERY field below — patient_name, doctor_name, "
+    "diagnosis, additional_details, all of them — not only document_summary):\n"
     "- original_language: name the language(s) the document is written in, e.g. "
     '"English", "Arabic", "Arabic and English".\n'
-    "- Report EVERY extracted value in English: translate non-English content "
-    "faithfully.\n"
-    "- Proper names (people, doctors, clinics, brands, places) are transliterated into "
-    "Latin script exactly as written — never translated, never replaced with a "
-    "similar-sounding or more common name.\n"
+    "- ALWAYS write every value in English using the Latin alphabet. NEVER output "
+    "Arabic, Kurdish, or any other non-Latin script in any field. Translate "
+    "non-English words and phrases into English.\n"
+    "- Transliterate proper names (people, doctors, clinics, brands, places) into the "
+    "Latin alphabet — e.g. the Arabic name “محمد عبد "
+    "الله” must be written “Mohammed Abdullah”, never "
+    "left in Arabic. Do not translate a name's meaning and do not replace it with a "
+    "different or more common name; transliterate the actual name. If the document also "
+    "prints the same name in the Latin alphabet somewhere (an embedded image caption, a "
+    "signature, or an MRZ), use that exact spelling.\n"
     "\n"
-    "Accuracy rules (critical):\n"
-    "- Transcribe names, numbers, dates, and identifiers EXACTLY as they appear, "
-    "character by character. Do not correct spelling, expand abbreviations, reorder "
-    "words, or \"fix\" anything that looks unusual.\n"
+    "Accuracy rules (critical) — these govern a value's CONTENT, not which script it is "
+    "written in (every value is always English/Latin, per the language rules above):\n"
+    "- Transcribe numbers, dates, and identifiers EXACTLY, digit by digit. For names "
+    "and words, render the true content faithfully — never invent, correct, expand, "
+    "reorder, or \"improve\" what the document actually says.\n"
     "- Never guess or fabricate a value. If a value is unclear or only partially "
     "legible, return null for that field, or only the clearly legible part — never a "
     "plausible-looking guess.\n"

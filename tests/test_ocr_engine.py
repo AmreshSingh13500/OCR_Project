@@ -3,11 +3,14 @@
 [TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
            T5.1 — Test suite completion
            T8.2 — Multi-language documents + extraction fidelity (additive)
+           T8.4 — Non-English field values + explicit OCR non-English detection
 [SUBTASKS] T3.2.2 AC: printed_report.jpg -> non-empty text containing known fixture keywords
            T3.2.3 AC: concurrent calls don't crash or interleave results
            T3.2.4 AC: <20-char boundary cases for the vision-reroute rule
            T8.2.2 AC: OcrResult carries mean confidence; <0.80 confidence boundary cases
                   for the reroute quality gate (incl. None -> char rule only)
+           T8.4.2 AC: non-Latin OCR text reroutes to vision; clean English (incl.
+                  numbers/punctuation) does not; _non_latin_letter_ratio boundaries
            T5.1.2 backfilled committed pytest coverage for T3.2 using T5.1.1's real
                   printed_report.jpg fixture (previously verified ad hoc, per SUBTASKS.md)
 [SUMMARY]  Loads the real PaddleOCR engine (cached locally from earlier manual
@@ -22,6 +25,9 @@
                                 verification)
            2026-07-19  T8.2.2  adapt to OcrResult return shape; add confidence-gate
                                 boundary tests (0.10/0.79/0.80/0.95/None)
+           2026-07-19  T8.4.2  add non-Latin-script reroute tests (Arabic -> reroute;
+                                clean English incl. numbers/punctuation -> no reroute) +
+                                _non_latin_letter_ratio boundary tests
 """
 
 import asyncio
@@ -114,3 +120,36 @@ def test_should_reroute_to_vision_confidence_gate(mean_confidence, expected):
     """[T8.2.2] AC: >=20 chars but mean confidence <0.80 reroutes to vision; >=0.80 or None is trusted."""
     long_enough_text = "plenty of extracted characters here"
     assert should_reroute_to_vision(long_enough_text, mean_confidence) == expected
+
+
+def test_should_reroute_to_vision_on_non_latin_script():
+    """[T8.4.2] AC: OCR text that is substantially non-Latin (e.g. Arabic) reroutes to vision even at high confidence."""
+    arabic = "سروة إبراهيم حمادة اسم المريض الطبيب"
+    assert should_reroute_to_vision(arabic, 0.99) is True
+
+
+def test_should_not_reroute_clean_english_with_high_confidence():
+    """[T8.4.2] AC: a clean English line (no non-Latin script, high confidence) is trusted — no false reroute."""
+    english = "Patient Name John Smith Diagnosis influenza"
+    assert should_reroute_to_vision(english, 0.95) is False
+
+
+def test_should_not_reroute_english_with_numbers_and_punctuation():
+    """[T8.4.2] AC: digits/punctuation are ignored by the non-Latin ratio — a numbers-heavy English page isn't misjudged."""
+    text = "IVSd 1.2 cm  EF 51 %  LVIDd 6.6 cm  date 15/04/2026"
+    assert should_reroute_to_vision(text, 0.95) is False
+
+
+@pytest.mark.parametrize(
+    "ratio_input, expected",
+    [
+        ("English only words here", 0.0),
+        ("سروة إبراهيم", 1.0),
+        ("12345 %/.- ", 0.0),  # no letters at all
+    ],
+)
+def test_non_latin_letter_ratio(ratio_input, expected):
+    """[T8.4.2] _non_latin_letter_ratio ignores non-letters and measures only alphabetic script."""
+    from app.pipeline.ocr_engine import _non_latin_letter_ratio
+
+    assert _non_latin_letter_ratio(ratio_input) == pytest.approx(expected)
