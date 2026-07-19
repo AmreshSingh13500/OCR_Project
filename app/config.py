@@ -4,7 +4,9 @@
            T3.1 — CLIP router (Step 4a)
            T3.2 — PaddleOCR engine (Step 4b)
            T5.2 — Security hardening (app level)
+           T8.3 — Vision-path accuracy (optional per-path model)
 [SUBTASKS] T1.1.2 pydantic-settings Settings; fail fast on missing required env vars
+           T8.3.3 OPENAI_VISION_MODEL — optional stronger model for the vision path only
            T3.1.2 CLIP_LABELS candidate labels for zero-shot document classification
            T3.1.3 / T3.2.4 BRANCH_A_PADDLEOCR / BRANCH_B_VISION frozen branch constants
            T5.2.3 MAX_REQUEST_BODY_BYTES — FastAPI-level request body size cap
@@ -45,6 +47,10 @@
                                 (Rule 7: new optional env var, no rename), also added to
                                 IMPLEMENTATION_PLAN.md §3's env var table and
                                 .env.example for consistency
+           2026-07-19  T8.3.3  add OPENAI_VISION_MODEL (optional, default None -> falls
+                                back to OPENAI_MODEL) — additive new optional env var
+                                (Rule 7-safe, same precedent as ALLOWED_FILE_HOSTS);
+                                also added to plan §3 + .env.example
 """
 
 from typing import Optional
@@ -66,6 +72,12 @@ class Settings(BaseSettings):
 
     # Operational knobs — default to the plan's example values
     OPENAI_MODEL: str = "gpt-4o-mini"
+    # [T8.3.3] Optional stronger model for the VISION path only (photos/scans/handwriting/
+    # non-Latin script — where reading accuracy, not cost, is the bottleneck). Unset ->
+    # falls back to OPENAI_MODEL, so behavior is unchanged unless explicitly set. Lets a
+    # deployment spend gpt-4o on hard image documents while keeping the cheap model for
+    # the text path (native PDF / clean OCR), instead of paying gpt-4o prices on every doc.
+    OPENAI_VISION_MODEL: Optional[str] = None
     MAX_FILE_SIZE_MB: int = 25
     DOWNLOAD_TIMEOUT_S: int = 30
     LOG_LEVEL: str = "INFO"

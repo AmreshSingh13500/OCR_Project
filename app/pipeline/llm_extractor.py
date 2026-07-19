@@ -3,6 +3,7 @@
 [TASK]     T4.1 — OpenAI structured extraction (Step 5)
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
+           T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
            T4.1.3 Vision path: <=3 base64 JPEGs (quality 85, longest side 1536px)
@@ -13,6 +14,8 @@
            T8.1.2 generalized any-document extraction prompt (text + vision share it)
            T8.2.1 additive original_language key + English-output/transliteration prompt rules
            T8.2.3 verbatim-transcription prompt rules + vision detail:"high"
+           T8.3.2 vision resolution 2048px/quality 90 + MRZ-authoritative & completeness prompt rules
+           T8.3.3 optional OPENAI_VISION_MODEL — stronger model for the vision path only
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape — the 6 original medical keys (patient_name, doctor_name,
@@ -98,6 +101,16 @@
                                 null, not a guess); vision image_url items now send
                                 detail:"high" (cost bounded by T4.1.3's 1536px
                                 downscale) — internal request param, no contract surface
+           2026-07-19  T8.3.2  vision downscale cap 1536->2048px + JPEG quality 85->90;
+                                prompt gains MRZ-authoritative rule (passports/IDs) and
+                                an explicit completeness rule (extract every labeled
+                                field). Prompt/encoding tuning only (plan T7.2.2 allows) —
+                                no contract surface touched (Rule 7 gate n/a)
+           2026-07-19  T8.3.3  _call_chat_completion()/_create_chat_completion() now take
+                                an explicit `model`; text path passes OPENAI_MODEL, vision
+                                path passes _vision_model() (OPENAI_VISION_MODEL or the
+                                default). Internal signature change (Rule 7B); the new env
+                                var is additive/optional (Rule 7 gate n/a)
 """
 
 import base64
@@ -157,6 +170,19 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "- Never guess or fabricate a value. If a value is unclear or only partially "
     "legible, return null for that field, or only the clearly legible part — never a "
     "plausible-looking guess.\n"
+    "- If the document is a passport, ID card, or any document with a machine-readable "
+    "zone (MRZ — the one or two lines of monospaced characters filled with '<'), read "
+    "the MRZ and use it as the AUTHORITATIVE source for the holder's name, document "
+    "number, nationality, date of birth, sex, and expiry date: it is machine-encoded "
+    "and more reliable than the printed labels. In the MRZ, '<' is a separator/filler; "
+    "the surname comes before '<<' and the given names after it.\n"
+    "\n"
+    "Completeness rule:\n"
+    "- Extract EVERY labeled field and value visible on the document — do not skip any. "
+    "For an ID, passport, form, or report, that means every field (e.g. document/serial "
+    "number, type, country, date of issue, date of expiry, place of birth, nationality, "
+    "sex, mother's/father's name, issuing authority, every measurement row, every result "
+    "line). Anything not mapped to a named field below goes into additional_details.\n"
     "\n"
     "Fill every field of the response schema as follows:\n"
     "1. document_type: a short label naming what kind of document this is, e.g. "
@@ -181,9 +207,13 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "original_language."
 )
 
-# [T4.1.3] Per plan §4 T4.1.3 exactly — bounds vision token cost/latency.
-_VISION_MAX_LONGEST_SIDE_PX = 1536
-_VISION_JPEG_QUALITY = 85
+# [T4.1.3] Bounds vision token cost/latency. [T8.3.2] Raised 1536->2048 (GPT-4o's
+# high-detail tiling sweet spot — 2048px longest side maps to a full 6-tile grid, so
+# small text like a clinic-name header or an MRZ line survives) and quality 85->90
+# (sharper text edges). Cost tradeoff (more image tokens/call) recorded in TASKS.md §5;
+# still bounded — every image is capped at this longest side before encoding.
+_VISION_MAX_LONGEST_SIDE_PX = 2048
+_VISION_JPEG_QUALITY = 90
 
 # [T4.1.4] Per plan §4 T4.1.4 exactly — only transient/server-side failures are retried.
 # AuthenticationError (401) / BadRequestError (400) are config/contract bugs, not
@@ -274,7 +304,15 @@ def extract_from_text(text: str) -> dict:
         {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
         {"role": "user", "content": text},
     ]
-    return _call_chat_completion(messages)
+    return _call_chat_completion(messages, model=settings.OPENAI_MODEL)
+
+
+# [T8.3.3] The vision path optionally uses a stronger model than the text path — image
+# reading accuracy (small/photographed/non-Latin text) is where the cheap model falls
+# down, and the text path (already-extracted characters) doesn't need the upgrade. Unset
+# OPENAI_VISION_MODEL -> same model as the text path, so behavior is unchanged by default.
+def _vision_model() -> str:
+    return settings.OPENAI_VISION_MODEL or settings.OPENAI_MODEL
 
 
 # Downscales only when needed (never upscales a smaller image) and re-encodes as JPEG —
@@ -315,16 +353,16 @@ def extract_from_images(images: list[np.ndarray]) -> dict:
         {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
         {"role": "user", "content": content},
     ]
-    return _call_chat_completion(messages)
+    return _call_chat_completion(messages, model=_vision_model())
 
 
 # [T4.1.4] Shared call path for both extraction functions: retries transient OpenAI
 # failures with exponential backoff, then raises LLMError once attempts are exhausted.
 # Non-retryable errors (401/400) are not in _RETRYABLE_OPENAI_ERRORS so they propagate
 # unwrapped on the first attempt, per the plan's "fail immediately" rule.
-def _call_chat_completion(messages: list) -> dict:
+def _call_chat_completion(messages: list, model: str) -> dict:
     try:
-        response = _create_chat_completion(messages)
+        response = _create_chat_completion(messages, model)
     except _RETRYABLE_OPENAI_ERRORS as exc:
         raise LLMError(
             f"OpenAI extraction failed after {OPENAI_MAX_RETRIES} attempts: {exc}"
@@ -347,9 +385,9 @@ def _call_chat_completion(messages: list) -> dict:
     stop=stop_after_attempt(OPENAI_MAX_RETRIES),
     reraise=True,
 )
-def _create_chat_completion(messages: list):
+def _create_chat_completion(messages: list, model: str):
     return _client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+        model=model,
         messages=messages,
         response_format=RESPONSE_FORMAT,
     )

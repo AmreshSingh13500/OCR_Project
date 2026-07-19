@@ -4,7 +4,12 @@
            T5.1 — Test suite completion
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
-[SUBTASKS] T8.2.1 AC: original_language nullable + required (strict), 10-key shape;
+           T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
+[SUBTASKS] T8.3.2 AC: prompt carries MRZ-authoritative + completeness rules; vision
+                  downscale cap is 2048px
+           T8.3.3 AC: vision path uses OPENAI_VISION_MODEL when set, falls back to
+                  OPENAI_MODEL when unset; text path always OPENAI_MODEL
+           T8.2.1 AC: original_language nullable + required (strict), 10-key shape;
                   prompt carries the language/English-output/transliteration rules
            T8.2.3 AC: prompt carries verbatim-transcription rules; vision items send
                   detail:"high"
@@ -44,6 +49,10 @@
            2026-07-19  T8.2.1  _ALL_NULL_RESULT extended to 10 keys; original_language
                                 schema test + language/verbatim prompt-rule test
            2026-07-19  T8.2.3  vision detail:"high" test
+           2026-07-19  T8.3.2  downscale test updated to 2048px; MRZ/completeness
+                                prompt-rule test + 2048-cap test
+           2026-07-19  T8.3.3  per-path model tests (vision uses OPENAI_VISION_MODEL when
+                                set; falls back to OPENAI_MODEL when unset)
 """
 
 import json
@@ -145,20 +154,20 @@ def test_extract_from_images_truncates_to_max_pages_and_uses_image_url_content(m
 
 
 def test_encode_image_downscales_when_over_max_longest_side():
-    """[T4.1.3] AC: an image wider than 1536px on its longest side is downscaled to fit, aspect preserved."""
-    image = np.zeros((1000, 2000), dtype=np.uint8)  # width 2000 is the longest side
+    """[T4.1.3][T8.3.2] AC: an image wider than 2048px on its longest side is downscaled to fit, aspect preserved."""
+    image = np.zeros((1500, 3000), dtype=np.uint8)  # width 3000 is the longest side
     data_url = _encode_image_base64_jpeg(image)
     assert data_url.startswith("data:image/jpeg;base64,")
 
     import base64
     jpeg_bytes = base64.b64decode(data_url.split(",", 1)[1])
     decoded = cv2.imdecode(np.frombuffer(jpeg_bytes, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-    assert max(decoded.shape) == 1536
-    assert decoded.shape[0] / decoded.shape[1] == pytest.approx(1000 / 2000, rel=0.01)
+    assert max(decoded.shape) == 2048
+    assert decoded.shape[0] / decoded.shape[1] == pytest.approx(1500 / 3000, rel=0.01)
 
 
 def test_encode_image_never_upscales_small_image():
-    """[T4.1.3] AC: an image already under 1536px is encoded unchanged, never upscaled."""
+    """[T4.1.3] AC: an image already under the cap is encoded unchanged, never upscaled."""
     image = np.zeros((300, 400), dtype=np.uint8)
     data_url = _encode_image_base64_jpeg(image)
 
@@ -336,6 +345,54 @@ def test_vision_images_are_sent_with_high_detail(monkeypatch):
 
     user_content = captured["messages"][1]["content"]
     assert all(item["image_url"]["detail"] == "high" for item in user_content)
+
+
+def test_prompt_contains_mrz_and_completeness_rules():
+    """[T8.3.2] AC: prompt instructs using the MRZ as authoritative and extracting every labeled field."""
+    prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    assert "MRZ" in prompt
+    assert "AUTHORITATIVE" in prompt
+    assert "EVERY labeled field" in prompt
+
+
+def test_vision_encode_uses_2048_longest_side():
+    """[T8.3.2] AC: the vision downscale cap is 2048px (up from 1536)."""
+    assert llm_extractor._VISION_MAX_LONGEST_SIDE_PX == 2048
+
+
+def test_vision_path_uses_vision_model_when_set(monkeypatch):
+    """[T8.3.3] AC: vision path uses OPENAI_VISION_MODEL when set; text path still uses OPENAI_MODEL."""
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(settings, "OPENAI_VISION_MODEL", "gpt-4o")
+    models = []
+
+    def fake_create(**kwargs):
+        models.append(kwargs["model"])
+        return _fake_response(_ALL_NULL_RESULT)
+
+    monkeypatch.setattr(llm_extractor._client.chat.completions, "create", fake_create)
+
+    extract_from_text("some text")
+    extract_from_images([np.zeros((50, 50), dtype=np.uint8)])
+
+    assert models == ["gpt-4o-mini", "gpt-4o"]
+
+
+def test_vision_path_falls_back_to_openai_model_when_vision_model_unset(monkeypatch):
+    """[T8.3.3] AC: OPENAI_VISION_MODEL unset -> vision path uses OPENAI_MODEL (unchanged default behavior)."""
+    monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(settings, "OPENAI_VISION_MODEL", None)
+    models = []
+
+    def fake_create(**kwargs):
+        models.append(kwargs["model"])
+        return _fake_response(_ALL_NULL_RESULT)
+
+    monkeypatch.setattr(llm_extractor._client.chat.completions, "create", fake_create)
+
+    extract_from_images([np.zeros((50, 50), dtype=np.uint8)])
+
+    assert models == ["gpt-4o-mini"]
 
 
 @pytest.mark.skipif(

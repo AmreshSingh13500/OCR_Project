@@ -117,7 +117,8 @@ OCR_Project/
 | `LARAVEL_WEBHOOK_URL` | Step 6 target | `https://erp.yourdomain.com/api/internal/ocr-webhook` |
 | `LARAVEL_WEBHOOK_KEY` | Bearer token we send to Laravel | `long-random-hex` |
 | `OPENAI_API_KEY` | OpenAI auth | `sk-...` |
-| `OPENAI_MODEL` | LLM model | `gpt-4o-mini` |
+| `OPENAI_MODEL` | LLM model (text path; default for both) | `gpt-4o-mini` |
+| `OPENAI_VISION_MODEL` | optional stronger model for the vision path only (T8.3.3); unset → uses `OPENAI_MODEL` | `gpt-4o` |
 | `MAX_FILE_SIZE_MB` | Download guard | `25` |
 | `DOWNLOAD_TIMEOUT_S` | httpx timeout for file fetch | `30` |
 | `LOG_LEVEL` | logging | `INFO` |
@@ -349,6 +350,15 @@ Constants in `config.py` (not env): `NATIVE_PDF_MIN_CHARS = 100`, `MAX_PDF_PAGES
 - T8.2.3 Fidelity hardening: prompt gains explicit verbatim-transcription rules (copy names/numbers/IDs character-for-character; never correct, expand, or infer; unclear → null or only the legible part — never a plausible guess); vision `image_url` items gain `"detail": "high"` (better small-text reading; token cost bounded by T4.1.3's existing 1536 px downscale — cost tradeoff recorded in TASKS.md §5).
 **Dependencies:** T8.1 (DONE).
 **AC:** Schema/mirror tests cover the 10-key shape (legacy 6 still byte-identical); prompt contains the language + verbatim rules and is still shared by both paths; `should_reroute_to_vision` boundary tests: <20 chars → reroute regardless of confidence, ≥20 chars + conf <0.80 → reroute, ≥20 chars + conf ≥0.80 → trusted, confidence omitted → char rule only; vision content items carry `detail: "high"`; full pytest suite green.
+
+#### T8.3 — Vision-path accuracy (original-image passthrough, resolution, MRZ/completeness, per-path model)
+**Goal:** Maximize extraction accuracy on real photographed/scanned documents (observed failures: wrong doctor name off a photographed ultrasound header; incomplete passport fields). The vision path was being fed a deliberately degraded image and a weak model. Four levers, all additive/internal:
+**Subtasks:**
+- T8.3.1 Send the **original color image** to the vision LLM, not `cleaned.vision_ready`. OpenCV cleaning (grayscale + CLAHE + text-based deskew) exists for PaddleOCR; it degrades GPT-4o vision (loses color; the deskew can mis-rotate a photo whose dominant dark pixels aren't text, e.g. an ultrasound cone, smearing small header text). Classification and the PaddleOCR path keep using the cleaned images. Internal (Rule 7B).
+- T8.3.2 Raise the vision downscale cap 1536→2048 px (GPT-4o high-detail tiling sweet spot; small text like a clinic header / MRZ line survives) and JPEG quality 85→90. Prompt gains: (a) an **MRZ-authoritative** rule — for passports/IDs, read the machine-readable zone and treat it as the source of truth for name/number/nationality/DOB/sex/expiry; (b) an explicit **completeness** rule — extract every labeled field, anything unmapped goes to `additional_details`. Cost tradeoff (more image tokens/call) recorded in TASKS.md §5.
+- T8.3.3 Add optional `OPENAI_VISION_MODEL` env var: a stronger model for the vision path only (unset → falls back to `OPENAI_MODEL`, so default behavior is unchanged). Lets a deployment spend gpt-4o on hard image documents while keeping the cheap model for the text path. Additive optional env var (Rule 7-safe).
+**Dependencies:** T8.2 (DONE).
+**AC:** `_extract_from_pages` sends the original image to `extract_from_images` (not `vision_ready`) — verified by the existing e2e vision tests staying green after the swap; encode downscale test updated to 2048 px; prompt-rule tests for MRZ + completeness; per-path model tests (vision uses `OPENAI_VISION_MODEL` when set, falls back when unset; text path always `OPENAI_MODEL`); full pytest suite green. *Real-accuracy validation (the actual "reads the ultrasound name / all passport fields correctly" check) belongs to T7.2.1's live run with a real key — this task ships the mechanism; measuring the accuracy gain needs live API calls not available in the dev env.*
 
 ---
 

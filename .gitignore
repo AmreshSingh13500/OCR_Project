@@ -52,3 +52,4 @@ Thumbs.db
 .tokensave/tokensave.db
 .tokensave/tokensave.db-shm
 .tokensave/tokensave.db-wal
+.env.example

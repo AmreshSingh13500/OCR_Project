@@ -5,9 +5,11 @@
            T5.2 — Security hardening (app level)
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
+           T8.3 — Vision-path accuracy (original-image passthrough)
 [SUBTASKS] T8.1.3 success path sets error_message=ALL_FIELDS_NULL_MESSAGE when every
                   extracted field is null (wires T4.1.5's signal into the webhook)
            T8.2.2 thread OcrResult(text, mean_confidence) into the reroute decision
+           T8.3.1 send the ORIGINAL color image (not cleaned.vision_ready) to the vision LLM
            T1.2.2 import ProcessRequest from app.schemas instead of a local duplicate
            T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
            T4.3.2 processing_path assignment (native_pdf/paddleocr/vision_api); vision
@@ -130,6 +132,11 @@
            2026-07-19  T8.2.2  _extract_from_pages() consumes ocr_engine's new
                                 OcrResult and passes mean_confidence into
                                 should_reroute_to_vision() — internal refactor (Rule 7B),
+                                no payload-shape/error-string changes (Rule 7 gate n/a)
+           2026-07-19  T8.3.1  _extract_from_pages() now appends the ORIGINAL color image
+                                to vision_images (was cleaned.vision_ready) — vision LLM
+                                reads the undegraded photo; classification + PaddleOCR
+                                still use cleaned images. Internal refactor (Rule 7B),
                                 no payload-shape/error-string changes (Rule 7 gate n/a)
 """
 
@@ -276,7 +283,15 @@ async def _extract_from_pages(
     for image in images:
         with _timed(timings, "step3_clean"):
             cleaned = clean_image(image, case_id=case_id)
-        vision_images.append(cleaned.vision_ready)
+        # [T8.3.1] The vision LLM gets the ORIGINAL color image, not cleaned.vision_ready.
+        # OpenCV cleaning (grayscale + CLAHE + text-based deskew) exists to help PaddleOCR
+        # (Branch A); it degrades GPT-4o vision — it discards color and the deskew can
+        # mis-rotate a photo whose dominant "text pixels" aren't text (e.g. an ultrasound
+        # cone), smearing small header text like a clinic/doctor name. classification and
+        # the PaddleOCR path still use the cleaned images; only what's sent to the LLM
+        # changes. (T2.2.4 already kept CLAHE-gray over binary "because binarization
+        # destroys detail the vision model needs" — this takes that one step further.)
+        vision_images.append(image)
 
         with _timed(timings, "step4a_classify"):
             label_index, confidence = classify(cleaned.vision_ready)
