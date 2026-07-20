@@ -384,6 +384,13 @@ Constants in `config.py` (not env): `NATIVE_PDF_MIN_CHARS = 100`, `MAX_PDF_PAGES
 **Dependencies:** T8.4, T8.5 (both DONE).
 **AC:** Prompt-rule test: the "Name roles" section is present and states the subject/holder (incl. a passport holder) → `patient_name`, the physician → `doctor_name`, and never cross them; no schema/key/signature change (all T8.1–T8.5 tests unchanged and green); full pytest suite green. *Real-accuracy validation (does it actually route a real passport holder to `patient_name` and never mistake a doctor for a patient) is T7.2.1's live-key job — this task ships the prompt mechanism.*
 
+#### T8.7 — Language-mix percentage in `original_language` (prompt, contract-safe)
+**Goal:** When a document is written in more than one language, `original_language` must report each language's *approximate percentage share* (e.g. `"75% Arabic, 25% English"`) rather than just naming them; a single-language document still just names its language. Requirement recorded from product owner instruction, 2026-07-20 (see TASKS.md §5). The owner phrased this as "add document type and original language (with percentages) to `additional_details`" — but `document_type` and `original_language` are **already dedicated top-level `extracted_data` keys**, and `additional_details` is defined as *details not already captured in a named field*; duplicating them there would contradict that design. So the percentage enrichment lands on the existing `original_language` field (the correct home), and nothing is copied into `additional_details`.
+**Subtasks:**
+- T8.7.1 Extend the `original_language` prompt rule: single language → just name it (`"English"`, `"Arabic"`); mixed → list each language with its approximate percentage share of the text, estimated from how much of the transcription is in each script, rounded to whole numbers that add up to 100 (e.g. `"75% Arabic, 25% English"`, `"60% English, 40% Kurdish"`). Prompt wording only — `original_language` is already a string key (T8.2.1), so no schema/key change.
+**Dependencies:** T8.2 (defined `original_language`), T8.6 (both DONE).
+**AC:** Prompt-rule test: `original_language` instructs a percentage split (adding to 100, with a worked example) for mixed-language documents and a plain name for single-language ones; no schema/key/signature change (all T8.1–T8.6 tests unchanged and green); full pytest suite green. *Whether the model's estimated percentages are accurate on real documents is T7.2.1's live-key job — this task ships the prompt mechanism and the value format.*
+
 ---
 
 ## 5. Dependency Graph (Critical Path)

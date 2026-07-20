@@ -8,7 +8,10 @@
            T8.4 — Non-English field values forced to English (prompt fix)
            T8.5 — Complex documents: transcription-grounded extraction + RTL rules
            T8.6 — Role-based patient/subject vs doctor name assignment (prompt)
-[SUBTASKS] T8.6.1 AC: prompt carries the Name-roles rules — subject/holder (incl.
+           T8.7 — Language-mix percentage in original_language (prompt)
+[SUBTASKS] T8.7.1 AC: prompt tells original_language to give each language's approximate
+                  % share when a document mixes languages (single language -> just named)
+           T8.6.1 AC: prompt carries the Name-roles rules — subject/holder (incl.
                   passport holder) -> patient_name, physician -> doctor_name, never crossed
            T8.5.1 AC: full_text nullable + FIRST schema property/required entry
                   (transcription-grounded extraction); prompt transcribe-first rules
@@ -76,6 +79,9 @@
                                 the subject/holder (incl. a passport holder) to
                                 patient_name and the physician to doctor_name, by ROLE,
                                 never crossing them
+           2026-07-20  T8.7.1  new prompt-rule test that original_language instructs a
+                                percentage split for mixed-language documents (adding to
+                                100, worked example) and a plain name for single-language
 """
 
 import json
@@ -388,6 +394,16 @@ def test_prompt_forces_english_latin_for_every_field():
     assert "Mohammed Abdullah" in prompt
     # accuracy is explicitly scoped to CONTENT, not script (the conflict that caused the bug)
     assert "CONTENT" in prompt
+
+
+def test_prompt_instructs_language_percentage_breakdown_for_mixed_documents():
+    """[T8.7.1] AC: prompt tells original_language to report each language's approximate percentage share (adding up to 100, with a worked example) when a document mixes languages, and to just name the language when it is single-language."""
+    prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    assert "percentage share" in prompt
+    assert "add up to 100" in prompt
+    assert "SINGLE language" in prompt
+    # worked mixed-language example with percentages
+    assert "75% Arabic, 25% English" in prompt
 
 
 def test_prompt_contains_name_role_disambiguation_rules():

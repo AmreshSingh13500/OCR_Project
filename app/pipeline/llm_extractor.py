@@ -7,6 +7,7 @@
            T8.4 — Non-English field values forced to English (prompt fix)
            T8.5 — Complex documents: transcription-grounded extraction + RTL rules
            T8.6 — Role-based patient/subject vs doctor name assignment (prompt)
+           T8.7 — Language-mix percentage in original_language (prompt)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
            T4.1.3 Vision path: <=3 base64 JPEGs (downscale cap + quality now per T8.3.2)
@@ -25,6 +26,8 @@
            T8.5.2 RTL table/honorific/cross-script prompt rules
            T8.6.1 role-based name assignment — subject/holder (incl. passport holder)
                   -> patient_name; physician/referrer/signer -> doctor_name; never crossed
+           T8.7.1 original_language reports each language's approximate % share for
+                  mixed-language documents (single language -> just named)
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape — the 6 original medical keys (patient_name, doctor_name,
@@ -142,6 +145,14 @@
                                 tuning only (T7.2.2 allows); no schema/key change — this
                                 is the contract-safe "Option A" the user chose over
                                 renaming patient_name -> "Name" (Rule 7 gate n/a)
+           2026-07-20  T8.7.1  original_language prompt rule extended: mixed-language
+                                documents report each language's approximate percentage
+                                share (adding up to 100), e.g. "75% Arabic, 25% English";
+                                single-language documents just name the language.
+                                document_type/original_language already have dedicated
+                                keys, so nothing was duplicated into additional_details
+                                (which is by-design for details NOT already in a named
+                                field). Prompt wording only, no schema change (Rule 7 n/a)
 """
 
 import base64
@@ -190,6 +201,11 @@ _client = OpenAI(api_key=settings.OPENAI_API_KEY)
 # signer is the doctor_name; never cross them, and leave a genuinely ambiguous name's
 # field null. Contract-safe (Rule 7): prompt wording only, no schema/key change — this
 # is "Option A", chosen by the user over renaming the frozen patient_name key to "Name".
+# [T8.7.1] original_language now reports a percentage split for mixed-language documents
+# (e.g. "75% Arabic, 25% English"); single-language docs just name the language. Prompt
+# wording only — original_language is already a string key (T8.2.1), so no schema change.
+# document_type/original_language keep their dedicated top-level keys and are NOT copied
+# into additional_details (which is reserved for details not already in a named field).
 _EXTRACTION_SYSTEM_PROMPT = (
     "You are a document information extraction system. The document may be of ANY kind: "
     "medical (lab report, prescription, medicine box, ultrasound or radiology scan, "
@@ -221,8 +237,12 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "\n"
     "Language rules (these apply to EVERY field below — patient_name, doctor_name, "
     "diagnosis, additional_details, all of them — not only document_summary):\n"
-    "- original_language: name the language(s) the document is written in, e.g. "
-    '"English", "Arabic", "Arabic and English".\n'
+    "- original_language: name the language(s) the document is written in. If it is in a "
+    "SINGLE language, just name it, e.g. \"English\" or \"Arabic\". If it MIXES "
+    "languages, list each language with its approximate percentage share of the text — "
+    "estimate the share from how much of the transcription is in each script, round to "
+    "sensible whole numbers that add up to 100 — e.g. \"75% Arabic, 25% English\" or "
+    '"60% English, 40% Kurdish".\n'
     "- ALWAYS write every value in English using the Latin alphabet. NEVER output "
     "Arabic, Kurdish, or any other non-Latin script in any field except full_text. "
     "Translate non-English words and phrases into English.\n"
