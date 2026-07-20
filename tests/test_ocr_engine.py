@@ -11,6 +11,8 @@
                   for the reroute quality gate (incl. None -> char rule only)
            T8.4.2 AC: non-Latin OCR text reroutes to vision; clean English (incl.
                   numbers/punctuation) does not; _non_latin_letter_ratio boundaries
+           T8.5.3 AC: >20%-lines-below-0.60 cluster gate boundaries (0.50/0.21/0.20/
+                  0.00/None); OcrResult.low_confidence_ratio defaults to 0.0
            T5.1.2 backfilled committed pytest coverage for T3.2 using T5.1.1's real
                   printed_report.jpg fixture (previously verified ad hoc, per SUBTASKS.md)
 [SUMMARY]  Loads the real PaddleOCR engine (cached locally from earlier manual
@@ -28,6 +30,8 @@
            2026-07-19  T8.4.2  add non-Latin-script reroute tests (Arabic -> reroute;
                                 clean English incl. numbers/punctuation -> no reroute) +
                                 _non_latin_letter_ratio boundary tests
+           2026-07-19  T8.5.3  add low-confidence-cluster gate boundary tests + the
+                                OcrResult backward-compat default test
 """
 
 import asyncio
@@ -153,3 +157,27 @@ def test_non_latin_letter_ratio(ratio_input, expected):
     from app.pipeline.ocr_engine import _non_latin_letter_ratio
 
     assert _non_latin_letter_ratio(ratio_input) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "low_confidence_ratio, expected",
+    [
+        (0.50, True),   # half the page unreadable -> reroute (mixed-language page)
+        (0.21, True),   # just over the threshold -> reroute
+        (0.20, False),  # exactly at the threshold -> trusted
+        (0.00, False),  # every line readable -> trusted
+        (None, False),  # ratio unknown -> other gates alone decide
+    ],
+)
+def test_should_reroute_to_vision_low_confidence_cluster_gate(low_confidence_ratio, expected):
+    """[T8.5.3] AC: >20% of lines below 0.60 confidence reroutes to vision even when the MEAN confidence is high (English body masking an unreadable Arabic region)."""
+    long_english = "Patient scan report with plenty of readable English body text"
+    assert should_reroute_to_vision(long_english, 0.95, low_confidence_ratio) == expected
+
+
+def test_ocr_result_low_confidence_ratio_defaults_to_zero():
+    """[T8.5.3] OcrResult stays backward compatible — pre-T8.5 constructor calls (text + mean only) still work."""
+    from app.pipeline.ocr_engine import OcrResult
+
+    result = OcrResult(text="abc", mean_confidence=0.9)
+    assert result.low_confidence_ratio == 0.0

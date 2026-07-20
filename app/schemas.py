@@ -3,10 +3,12 @@
 [TASK]     T1.2 — Auth & API endpoints
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
+           T8.5 — Complex documents: transcription-grounded extraction
 [SUBTASKS] T1.2.2 ProcessRequest / ExtractedData / WebhookPayload per PRD §4.1-4.2
            T8.1.1 additive ExtractedData keys: document_type / document_summary /
                   additional_details (+ DocumentDetail item model)
            T8.2.1 additive ExtractedData key: original_language
+           T8.5.1 additive ExtractedData key: full_text (original-script transcription)
 [SUMMARY]  Canonical Pydantic contract models for the HTTP surface. `ProcessRequest` is
            the POST /api/v1/process request body (PRD §4.1); FastAPI validates incoming
            JSON against it automatically, returning 422 on a malformed body (T1.2.3's
@@ -39,6 +41,10 @@
                                 optional nullable key, existing 9 untouched — additive,
                                 contract-safe; mirrors EXTRACTED_DATA_JSON_SCHEMA which
                                 gained the same key in the same session
+           2026-07-19  T8.5.1  add full_text — Rule 7 gate checked: 1 new optional
+                                nullable key, existing 10 untouched — additive,
+                                contract-safe; mirrors EXTRACTED_DATA_JSON_SCHEMA which
+                                gained the same key (as its FIRST property) same session
 """
 
 from typing import Literal, Optional
@@ -73,6 +79,10 @@ class DocumentDetail(BaseModel):
 # tolerate the extra key; document_type/document_summary/additional_details follow the
 # same additive precedent (T8.1.1).
 class ExtractedData(BaseModel):
+    # [T8.5.1] Additive: full transcription of the document in its ORIGINAL script (the
+    # only field allowed to carry non-Latin text) — generated first by the LLM so every
+    # other field is grounded in it (transcribe-then-extract). Null on the text path.
+    full_text: Optional[str] = None
     patient_name: Optional[str] = None
     doctor_name: Optional[str] = None
     diagnosis: Optional[str] = None

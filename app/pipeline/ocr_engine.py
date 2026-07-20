@@ -3,12 +3,14 @@
 [TASK]     T3.2 — PaddleOCR engine (Step 4b, Branch A)
            T8.2 — Multi-language documents + extraction fidelity (additive)
            T8.4 — Non-English field values in English + explicit OCR non-English detect
+           T8.5 — Complex documents: mixed-language low-confidence-cluster reroute
 [SUBTASKS] T3.2.1 initialize PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False) once at startup
            T3.2.2 extract_text(): OCR ocr_ready image, join lines top-to-bottom, log confidence
            T3.2.3 extract_text_async(): asyncio.Lock + run_in_executor thread-safety guard
            T3.2.4 should_reroute_to_vision(): <20-char fallback rule, logs the reroute
            T8.2.2 OcrResult(text, mean_confidence) + <0.80 mean-confidence reroute rule
            T8.4.2 should_reroute_to_vision(): non-Latin-script reroute (use vision to translate)
+           T8.5.3 OcrResult.low_confidence_ratio + >20%-lines-below-0.60 cluster reroute
 [SUMMARY]  Local CPU OCR engine for Branch A (printed documents). `load_paddleocr()`
            initializes a single PaddleOCR instance at app startup (lifespan) — angle
            classification on (photographed documents may be slightly rotated), English,
@@ -60,6 +62,14 @@
                                 should_reroute_to_vision() (>10% non-Latin script ->
                                 vision). Signature unchanged (backward compatible);
                                 internal refactor only (Rule 7B), no contract surface
+           2026-07-19  T8.5.3  OcrResult gains low_confidence_ratio (defaulted -> old
+                                constructor calls unaffected); should_reroute_to_vision()
+                                gains an optional low_confidence_ratio arg + a fourth
+                                trigger (>20% of lines below 0.60 confidence -> vision):
+                                catches a mostly-English page whose Arabic table region
+                                is unreadable — the mean gate misses it because the good
+                                English lines mask the bad cluster. Backward compatible;
+                                internal refactor only (Rule 7B), no contract surface
 """
 
 import asyncio
@@ -93,13 +103,27 @@ _MIN_OCR_CHARS = 20
 _MIN_OCR_MEAN_CONFIDENCE = 0.80
 
 
+# [T8.5.3] A line below this recognition confidence is "unreadable" for the cluster
+# gate below — chosen well under _MIN_OCR_MEAN_CONFIDENCE so it only counts genuinely
+# bad lines (foreign script, smudge), not merely mediocre ones.
+_LOW_CONF_LINE_THRESHOLD = 0.60
+# [T8.5.3] If more than this fraction of a page's lines are unreadable, the page has a
+# whole region local OCR can't handle (typically an Arabic table on an otherwise-English
+# report) — the English lines keep the MEAN confidence high, so T8.2.2's gate never
+# fires; this cluster gate is what catches the mixed-language page.
+_MAX_LOW_CONF_LINE_RATIO = 0.20
+
+
 # [T8.2.2] extract_text()'s return shape: the joined text plus the mean of PaddleOCR's
 # per-line recognition confidences (0.0 when nothing was detected) so the reroute
 # decision can consider quality, not just quantity, of the OCR output.
+# [T8.5.3] low_confidence_ratio: fraction of lines below _LOW_CONF_LINE_THRESHOLD —
+# a distribution signal the mean hides (many good lines + one unreadable region).
 @dataclass
 class OcrResult:
     text: str
     mean_confidence: float
+    low_confidence_ratio: float = 0.0
 
 
 # [T3.2.1] Initialize PaddleOCR once at app startup (lifespan) — CPU only; angle
@@ -154,9 +178,11 @@ def extract_text(ocr_ready: np.ndarray) -> OcrResult:
         texts.append(text)
         confidences.append(float(confidence))
 
+    low_conf_lines = sum(1 for c in confidences if c < _LOW_CONF_LINE_THRESHOLD)
     return OcrResult(
         text="\n".join(texts),
         mean_confidence=sum(confidences) / len(confidences),
+        low_confidence_ratio=low_conf_lines / len(confidences),
     )
 
 
@@ -212,12 +238,23 @@ def _non_latin_letter_ratio(text: str) -> float:
 # confidence gate above is the practical trigger; this check is the explicit, correct,
 # and forward-compatible signal (fires immediately if the engine is ever made
 # multilingual, and catches any non-Latin the recognizer does emit).
-def should_reroute_to_vision(text: str, mean_confidence: Optional[float] = None) -> bool:
+# [T8.5.3] low_confidence_ratio adds the distribution gate: a mostly-English page with
+# one unreadable region (an Arabic header table on an English report body) sails past
+# the mean-confidence gate — the many good English lines mask the bad cluster — yet the
+# unreadable region is often exactly where the names live. Optional with a default, so
+# every pre-T8.5 call shape keeps working (backward compatible).
+def should_reroute_to_vision(
+    text: str,
+    mean_confidence: Optional[float] = None,
+    low_confidence_ratio: Optional[float] = None,
+) -> bool:
     """
     True when a Branch-A page's OCR output should be rerouted to Branch B (vision):
     <20 chars (T3.2.4's fallback rule), mean recognition confidence below 0.80
-    (T8.2.2's quality gate — skipped when mean_confidence is None), or the text is
-    substantially non-Latin script (T8.4.2 — use vision for accurate translation).
+    (T8.2.2's quality gate — skipped when mean_confidence is None), substantially
+    non-Latin text (T8.4.2 — use vision for accurate translation), or an unreadable
+    line cluster: >20% of lines below 0.60 confidence (T8.5.3's mixed-language gate —
+    skipped when low_confidence_ratio is None).
     """
     if len(text) < _MIN_OCR_CHARS:
         logger.warning(
@@ -238,6 +275,14 @@ def should_reroute_to_vision(text: str, mean_confidence: Optional[float] = None)
             "OCR fallback: %.0f%% non-Latin script detected (>%.0f%% threshold) — "
             "rerouting page to %s for accurate translation",
             non_latin_ratio * 100, _MAX_NON_LATIN_RATIO * 100, BRANCH_B_VISION,
+        )
+        return True
+    if low_confidence_ratio is not None and low_confidence_ratio > _MAX_LOW_CONF_LINE_RATIO:
+        logger.warning(
+            "OCR fallback: %.0f%% of lines below %.2f confidence (>%.0f%% threshold) — "
+            "unreadable region on the page (likely mixed-language), rerouting page to %s",
+            low_confidence_ratio * 100, _LOW_CONF_LINE_THRESHOLD,
+            _MAX_LOW_CONF_LINE_RATIO * 100, BRANCH_B_VISION,
         )
         return True
     return False

@@ -73,6 +73,8 @@ def test_extracted_data_all_fields_default_to_none():
     assert data.additional_details is None
     # [T8.2.1] additive language field is nullable/optional too
     assert data.original_language is None
+    # [T8.5.1] additive transcription field is nullable/optional too
+    assert data.full_text is None
 
 
 def test_extracted_data_accepts_general_document_fields():

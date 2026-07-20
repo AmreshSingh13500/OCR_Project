@@ -6,9 +6,11 @@
            T8.1 — Generalized any-document extraction (additive contract update)
            T8.2 — Multi-language documents + extraction fidelity (additive)
            T8.3 — Vision-path accuracy (original-image passthrough)
+           T8.5 — Complex documents: mixed-language low-confidence-cluster reroute
 [SUBTASKS] T8.1.3 success path sets error_message=ALL_FIELDS_NULL_MESSAGE when every
                   extracted field is null (wires T4.1.5's signal into the webhook)
            T8.2.2 thread OcrResult(text, mean_confidence) into the reroute decision
+           T8.5.3 pass OcrResult.low_confidence_ratio into the reroute decision
            T8.3.1 send the ORIGINAL color image (not cleaned.vision_ready) to the vision LLM
            T1.2.2 import ProcessRequest from app.schemas instead of a local duplicate
            T4.3.1 _run_extraction() wiring Steps 2->5; direct images skip Step 2b
@@ -138,6 +140,10 @@
                                 reads the undegraded photo; classification + PaddleOCR
                                 still use cleaned images. Internal refactor (Rule 7B),
                                 no payload-shape/error-string changes (Rule 7 gate n/a)
+           2026-07-19  T8.5.3  _extract_from_pages() passes ocr_result.low_confidence_ratio
+                                as should_reroute_to_vision()'s third arg (mixed-language
+                                cluster gate) — internal refactor (Rule 7B), no contract
+                                surface changes (Rule 7 gate n/a)
 """
 
 import logging
@@ -303,7 +309,12 @@ async def _extract_from_pages(
             # [T8.2.2] Reroute on low mean confidence too, not just low char count —
             # garbled-but-long OCR output (non-English script, degraded print) must go
             # to vision instead of feeding the LLM mangled text it would "correct".
-            if not should_reroute_to_vision(ocr_result.text, ocr_result.mean_confidence):
+            # [T8.5.3] ...and on an unreadable line cluster (low_confidence_ratio): a
+            # mostly-English page with an Arabic table region passes the mean gate but
+            # loses that region's data unless vision reads the whole page.
+            if not should_reroute_to_vision(
+                ocr_result.text, ocr_result.mean_confidence, ocr_result.low_confidence_ratio
+            ):
                 ocr_texts.append(ocr_result.text)
                 continue
 

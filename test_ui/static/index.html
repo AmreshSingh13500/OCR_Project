@@ -409,6 +409,12 @@
           html += '<h3 class="section">Additional details</h3><table class="fields">' + drows + "</table>";
         }
 
+        // Full transcription (original script) — the grounding pass the extraction is based on
+        if (d.full_text) {
+          html += '<details><summary>Full transcription (original script)</summary><pre class="raw">' +
+                  escapeHtml(d.full_text) + "</pre></details>";
+        }
+
         fieldsBox.innerHTML = html;
       } else {
         fieldsBox.innerHTML = '<h3 class="section">Extracted data</h3><p class="hint">No extracted_data (error path).</p>';

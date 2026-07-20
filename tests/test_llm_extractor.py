@@ -6,7 +6,14 @@
            T8.2 — Multi-language documents + extraction fidelity (additive)
            T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
            T8.4 — Non-English field values forced to English (prompt fix)
-[SUBTASKS] T8.4.1 AC: prompt forces English/Latin for EVERY field (incl. patient_name),
+           T8.5 — Complex documents: transcription-grounded extraction + RTL rules
+           T8.6 — Role-based patient/subject vs doctor name assignment (prompt)
+[SUBTASKS] T8.6.1 AC: prompt carries the Name-roles rules — subject/holder (incl.
+                  passport holder) -> patient_name, physician -> doctor_name, never crossed
+           T8.5.1 AC: full_text nullable + FIRST schema property/required entry
+                  (transcription-grounded extraction); prompt transcribe-first rules
+           T8.5.2 AC: prompt carries RTL table/honorific/cross-script rules
+           T8.4.1 AC: prompt forces English/Latin for EVERY field (incl. patient_name),
                   with a transliteration example; accuracy scoped to content not script
            T8.3.2 AC: prompt carries MRZ-authoritative + completeness rules; vision
                   downscale cap is 2048px
@@ -60,6 +67,15 @@
                                 (incl. patient_name) with a transliteration example; the
                                 T8.2.1 prompt test updated to the reworded transliteration
                                 wording
+           2026-07-19  T8.5.1  _ALL_NULL_RESULT extended to 11 keys; full_text-first
+                                schema-order test + transcribe-first prompt test; the
+                                T8.2.1 10-key count test updated to 11
+           2026-07-19  T8.5.2  RTL prompt-rule assertions (same test as T8.5.1's prompt
+                                test)
+           2026-07-20  T8.6.1  new prompt-rule test that the "Name roles" section routes
+                                the subject/holder (incl. a passport holder) to
+                                patient_name and the physician to doctor_name, by ROLE,
+                                never crossing them
 """
 
 import json
@@ -89,6 +105,7 @@ from app.pipeline.llm_extractor import (
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 _ALL_NULL_RESULT = {
+    "full_text": None,
     "patient_name": None, "doctor_name": None, "diagnosis": None,
     "procedure": None, "cost": None, "medicines": None,
     "document_type": None, "document_summary": None, "additional_details": None,
@@ -321,11 +338,34 @@ def test_text_and_vision_paths_share_the_generalized_prompt(monkeypatch):
 
 
 def test_schema_gains_original_language_key():
-    """[T8.2.1] AC: original_language present, nullable, in required (strict mode); 10-key shape."""
+    """[T8.2.1] AC: original_language present, nullable, in required (strict mode); 11-key shape (10 + T8.5.1's full_text)."""
     props = EXTRACTED_DATA_JSON_SCHEMA["properties"]
     assert props["original_language"] == {"type": ["string", "null"]}
     assert "original_language" in EXTRACTED_DATA_JSON_SCHEMA["required"]
-    assert len(props) == 10
+    assert len(props) == 11
+
+
+def test_full_text_is_first_schema_property_for_transcription_grounding():
+    """[T8.5.1] AC: full_text is nullable AND the FIRST property/required entry — strict mode generates keys in schema order, so the model must transcribe before extracting."""
+    schema = EXTRACTED_DATA_JSON_SCHEMA
+    assert schema["properties"]["full_text"] == {"type": ["string", "null"]}
+    assert next(iter(schema["properties"])) == "full_text"
+    assert schema["required"][0] == "full_text"
+
+
+def test_prompt_contains_transcription_first_and_rtl_rules():
+    """[T8.5.1][T8.5.2] AC: prompt instructs transcribe-first into full_text (original script allowed there only, null on text path) and carries the RTL table/honorific/cross-script rules."""
+    prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    # transcription-first grounding
+    assert "STEP 1" in prompt
+    assert "full_text" in prompt
+    assert "ONLY field where non-Latin script is allowed" in prompt
+    assert "plain text rather than an image, set" in prompt  # text path -> null
+    # RTL table rules
+    assert "RIGHT to LEFT" in prompt
+    assert "RIGHTMOST" in prompt
+    assert "Honorific" in prompt
+    assert "never swap or drop" in prompt
 
 
 def test_prompt_contains_language_and_verbatim_accuracy_rules():
@@ -348,6 +388,20 @@ def test_prompt_forces_english_latin_for_every_field():
     assert "Mohammed Abdullah" in prompt
     # accuracy is explicitly scoped to CONTENT, not script (the conflict that caused the bug)
     assert "CONTENT" in prompt
+
+
+def test_prompt_contains_name_role_disambiguation_rules():
+    """[T8.6.1] AC: prompt tells the model to assign patient_name vs doctor_name by ROLE — the document's subject/holder (incl. a passport holder) is patient_name, the physician is doctor_name, and the two are never crossed."""
+    prompt = llm_extractor._EXTRACTION_SYSTEM_PROMPT
+    # dedicated role section, keyed on strings unique to it (not the RTL section)
+    assert "Name roles" in prompt
+    assert "person the document is ABOUT" in prompt
+    # a passport/ID holder with no medical role -> patient_name
+    assert "holder's name on a passport" in prompt
+    assert "that single name IS the patient_name" in prompt
+    # the physician side, and the hard no-cross rule
+    assert "doctor_name is the medical professional" in prompt
+    assert "NEVER put the doctor's name into patient_name" in prompt
 
 
 def test_vision_images_are_sent_with_high_detail(monkeypatch):

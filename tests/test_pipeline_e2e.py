@@ -139,7 +139,7 @@ async def test_run_pipeline_scanned_printed_page_uses_paddleocr_path(monkeypatch
     monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
     monkeypatch.setattr(orchestrator, "route_branch", lambda label, conf: "paddleocr")
     monkeypatch.setattr(orchestrator, "extract_text_async", _async_return(OcrResult(text="printed report text, plenty of characters", mean_confidence=0.95)))
-    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None: False)
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None, low_confidence_ratio=None: False)
     monkeypatch.setattr(
         orchestrator, "extract_from_text",
         lambda text: {"patient_name": None, "doctor_name": "Dr. Smith", "diagnosis": None,
@@ -203,7 +203,7 @@ async def test_run_pipeline_mixed_pages_one_vision_page_wins_vision_path(monkeyp
     monkeypatch.setattr(orchestrator, "classify", lambda vision_ready: (0, 0.9))
     monkeypatch.setattr(orchestrator, "route_branch", _sequence_fn(["paddleocr", "vision_api"]))
     monkeypatch.setattr(orchestrator, "extract_text_async", _async_return(OcrResult(text="first page ocr text, plenty long enough", mean_confidence=0.95)))
-    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None: False)
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None, low_confidence_ratio=None: False)
 
     def _fake_extract_from_images(images):
         captured_images.extend(images)
@@ -289,7 +289,7 @@ async def test_run_pipeline_multi_page_all_paddleocr_stays_paddleocr_path(monkey
             OcrResult(text="page two text long enough", mean_confidence=0.95),
         ]),
     )
-    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None: False)
+    monkeypatch.setattr(orchestrator, "should_reroute_to_vision", lambda text, mean_confidence=None, low_confidence_ratio=None: False)
 
     def _fake_extract_from_text(text):
         captured_text["value"] = text
@@ -466,6 +466,7 @@ def test_map_exception_to_error_message_logs_traceback_for_unmapped_exception(ca
 
 def _all_null_extracted() -> dict:
     return {
+        "full_text": None,
         "patient_name": None, "doctor_name": None, "diagnosis": None,
         "procedure": None, "cost": None, "medicines": None,
         "document_type": None, "document_summary": None, "additional_details": None,

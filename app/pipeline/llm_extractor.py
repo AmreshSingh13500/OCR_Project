@@ -5,6 +5,8 @@
            T8.2 — Multi-language documents + extraction fidelity (additive)
            T8.3 — Vision-path accuracy (resolution + completeness/MRZ prompt)
            T8.4 — Non-English field values forced to English (prompt fix)
+           T8.5 — Complex documents: transcription-grounded extraction + RTL rules
+           T8.6 — Role-based patient/subject vs doctor name assignment (prompt)
 [SUBTASKS] T4.1.1 Structured Outputs JSON schema (strict) mirroring ExtractedData, incl. `cost`
            T4.1.2 Text path: gpt-4o-mini chat completion with extraction system prompt
            T4.1.3 Vision path: <=3 base64 JPEGs (downscale cap + quality now per T8.3.2)
@@ -18,6 +20,11 @@
            T8.3.2 vision resolution 2048px/quality 90 + MRZ-authoritative & completeness prompt rules
            T8.3.3 optional OPENAI_VISION_MODEL — stronger model for the vision path only
            T8.4.1 prompt: ALL field values forced to English/Latin (fixes Arabic patient_name)
+           T8.5.1 full_text transcription-first schema field (additive; strict-mode key
+                  order = generation order -> transcribe-then-extract in one call)
+           T8.5.2 RTL table/honorific/cross-script prompt rules
+           T8.6.1 role-based name assignment — subject/holder (incl. passport holder)
+                  -> patient_name; physician/referrer/signer -> doctor_name; never crossed
 [SUMMARY]  Defines the OpenAI Structured Outputs contract for Step 5 and both extraction
            call paths. `EXTRACTED_DATA_JSON_SCHEMA`/`RESPONSE_FORMAT` mirror the
            ExtractedData shape — the 6 original medical keys (patient_name, doctor_name,
@@ -114,6 +121,27 @@
                                 path passes _vision_model() (OPENAI_VISION_MODEL or the
                                 default). Internal signature change (Rule 7B); the new env
                                 var is additive/optional (Rule 7 gate n/a)
+           2026-07-19  T8.5.1  add full_text as the FIRST schema property (strict mode
+                                generates keys in schema order -> the model transcribes
+                                the whole document before extracting; grounding fixes
+                                skipped-row/RTL errors) — Rule 7 gate checked: 1 new
+                                nullable key, prior 10 byte-identical, additive; the only
+                                field allowed to carry the original (non-Latin) script;
+                                null on the text path
+           2026-07-19  T8.5.2  prompt gains RTL rules: table labels are the RIGHTMOST
+                                cell (value to its left, never swap/drop rows), honorifics
+                                (المحترم etc.) are not part of names, cross-check
+                                dual-script names and prefer the Latin spelling. Prompt
+                                tuning only (T7.2.2 allows), no contract surface
+           2026-07-20  T8.6.1  prompt gains a "Name roles" section: assign patient_name
+                                (the document's subject/holder — incl. a passport/ID
+                                holder, or a "Patient Name"/الاسم/اسم المريض label) vs
+                                doctor_name (physician/referrer/signer) by ROLE, never
+                                crossing them; field-list item 3 updated so non-medical
+                                documents populate patient_name with the holder. Prompt
+                                tuning only (T7.2.2 allows); no schema/key change — this
+                                is the contract-safe "Option A" the user chose over
+                                renaming patient_name -> "Name" (Rule 7 gate n/a)
 """
 
 import base64
@@ -156,19 +184,48 @@ _client = OpenAI(api_key=settings.OPENAI_API_KEY)
 # English: "output in English/Latin" now explicitly applies to EVERY field, and the
 # "transcribe exactly" fidelity rule is scoped to CONTENT (don't invent/change), not to
 # the script — names/words are always transliterated/translated into Latin/English.
+# [T8.6.1] Name-roles section: assign patient_name vs doctor_name by the ROLE each name
+# plays, not its position — the subject/holder (incl. a passport or ID holder, or any
+# "Patient Name"/الاسم/اسم المريض label) is the patient_name; the physician/referrer/
+# signer is the doctor_name; never cross them, and leave a genuinely ambiguous name's
+# field null. Contract-safe (Rule 7): prompt wording only, no schema/key change — this
+# is "Option A", chosen by the user over renaming the frozen patient_name key to "Name".
 _EXTRACTION_SYSTEM_PROMPT = (
     "You are a document information extraction system. The document may be of ANY kind: "
     "medical (lab report, prescription, medicine box, ultrasound or radiology scan, "
     "bill) or non-medical (passport, ID card, invoice, certificate, letter, form, etc.), "
     "and may be written in ANY language (English, Arabic, Kurdish, mixed, ...).\n"
     "\n"
+    "STEP 1 — full_text (do this FIRST, before any other field):\n"
+    "Transcribe EVERY piece of text visible on the document into full_text, top to "
+    "bottom, exactly as written — keep the original language and script here (full_text "
+    "is the ONLY field where non-Latin script is allowed). Include every table row as "
+    "one 'label: value' line, every header, every caption inside embedded images, every "
+    "stamp and footnote. Miss nothing: a row you skip here is data lost forever. All "
+    "other fields must then be filled FROM this transcription (plus the image), so a "
+    "name or value that is not in full_text must not appear in any other field. If the "
+    "document content was given to you as plain text rather than an image, set "
+    "full_text to null — the text is already known.\n"
+    "\n"
+    "Right-to-left (RTL) documents — Arabic, Kurdish, etc.:\n"
+    "- Arabic text and tables read RIGHT to LEFT: in a table row, the field label is "
+    "usually the RIGHTMOST cell and its value is the cell to its LEFT. Match each value "
+    "to the label of its own row — e.g. a row labeled اسم الطبيب (doctor name) vs "
+    "اسم المريض (patient name): read each label carefully and never swap or drop one.\n"
+    "- Honorific titles such as المحترم (the respected), السيد (Mr.), or "
+    "الدكتور (Dr.) are NOT part of a person's name — do not include them in name "
+    "fields.\n"
+    "- The same name often appears in BOTH scripts on one document (e.g. an Arabic "
+    "table plus a Latin caption inside a scan image): cross-check them, and use the "
+    "Latin spelling for the name fields.\n"
+    "\n"
     "Language rules (these apply to EVERY field below — patient_name, doctor_name, "
     "diagnosis, additional_details, all of them — not only document_summary):\n"
     "- original_language: name the language(s) the document is written in, e.g. "
     '"English", "Arabic", "Arabic and English".\n'
     "- ALWAYS write every value in English using the Latin alphabet. NEVER output "
-    "Arabic, Kurdish, or any other non-Latin script in any field. Translate "
-    "non-English words and phrases into English.\n"
+    "Arabic, Kurdish, or any other non-Latin script in any field except full_text. "
+    "Translate non-English words and phrases into English.\n"
     "- Transliterate proper names (people, doctors, clinics, brands, places) into the "
     "Latin alphabet — e.g. the Arabic name “محمد عبد "
     "الله” must be written “Mohammed Abdullah”, never "
@@ -199,7 +256,22 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "sex, mother's/father's name, issuing authority, every measurement row, every result "
     "line). Anything not mapped to a named field below goes into additional_details.\n"
     "\n"
-    "Fill every field of the response schema as follows:\n"
+    "Name roles — decide which name is the PATIENT and which is the DOCTOR by the ROLE "
+    "each name plays on the document, not by where it sits:\n"
+    "- patient_name is the person the document is ABOUT — the patient, the subject, or "
+    "the holder. Use it for the holder's name on a passport or ID card, and for any name "
+    "labeled \"Patient Name\", \"Name\", \"Patient\", الاسم, or اسم المريض. If the "
+    "document names only one person and gives no medical role (e.g. a passport, an ID "
+    "card, a personal certificate), that single name IS the patient_name.\n"
+    "- doctor_name is the medical professional — the doctor, physician, consultant, "
+    "radiologist, or the clinician who referred, treated, or signed the report. Use it "
+    "for a name marked \"Dr.\", الطبيب, اسم الطبيب, \"Consultant\", \"Referred by\", or a "
+    "physician's signature or stamp.\n"
+    "- NEVER put the doctor's name into patient_name, and never put the patient's name "
+    "into doctor_name. If a name's role is genuinely unclear, leave the field you are "
+    "unsure about null rather than assign the name to the wrong role.\n"
+    "\n"
+    "After full_text, fill the remaining fields as follows:\n"
     "1. document_type: a short label naming what kind of document this is, e.g. "
     '"lab report", "handwritten prescription", "medicine box", "ultrasound scan", '
     '"passport", "invoice".\n'
@@ -208,7 +280,9 @@ _EXTRACTION_SYSTEM_PROMPT = (
     'issued by ... belonging to ... It carries ..."\n'
     "3. patient_name, doctor_name, diagnosis, procedure, cost, medicines: fill each one "
     "when that information is present on the document; return null for any that are "
-    "absent (for non-medical documents these will usually all be null).\n"
+    "absent. Assign patient_name and doctor_name strictly by the Name-roles rule above — "
+    "on a passport, ID, or other non-medical document, patient_name is the holder's/"
+    "subject's name (diagnosis, procedure, cost, and medicines are usually null there).\n"
     "4. additional_details: every other piece of information readable on the document "
     "that is not already captured in the fields above, as {\"field\": <label>, "
     "\"value\": <value>} pairs — identification numbers, dates, names, addresses, "
@@ -218,8 +292,8 @@ _EXTRACTION_SYSTEM_PROMPT = (
     "\n"
     "Never guess or fabricate values; report only what is actually readable. If the "
     "document is unreadable (blurry, blank, or too degraded), return null for EVERY "
-    "field, including document_type, document_summary, additional_details, and "
-    "original_language."
+    "field, including full_text, document_type, document_summary, additional_details, "
+    "and original_language."
 )
 
 # [T4.1.3] Bounds vision token cost/latency. [T8.3.2] Raised 1536->2048 (GPT-4o's
@@ -251,6 +325,13 @@ EXTRACTED_DATA_SCHEMA_NAME = "extracted_document_data"
 EXTRACTED_DATA_JSON_SCHEMA = {
     "type": "object",
     "properties": {
+        # [T8.5.1] MUST stay the FIRST property: OpenAI strict mode generates keys in
+        # schema order, so the model is forced to transcribe the whole document before
+        # filling any extraction field — transcription-grounded extraction (the
+        # "transcribe, then extract from your own transcription" decomposition). This is
+        # what makes RTL tables and mixed-language pages read completely instead of the
+        # model jumping straight to (wrong) field values. Nullable + additive (Rule 7).
+        "full_text": {"type": ["string", "null"]},
         "patient_name": {"type": ["string", "null"]},
         "doctor_name": {"type": ["string", "null"]},
         "diagnosis": {"type": ["string", "null"]},
@@ -284,6 +365,7 @@ EXTRACTED_DATA_JSON_SCHEMA = {
         "original_language": {"type": ["string", "null"]},
     },
     "required": [
+        "full_text",
         "patient_name",
         "doctor_name",
         "diagnosis",
